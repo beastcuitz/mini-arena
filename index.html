@@ -1,0 +1,2284 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Battlerite-lite Arena (Cast Times & Fixes)</title>
+    <style>
+        body {
+            background-color: #0a0a0c;
+            color: #ecf0f1;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            margin-top: 10px;
+            user-select: none;
+        }
+        canvas {
+            background-color: #1e293b;
+            border: 4px solid #0f172a;
+            border-radius: 8px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.9);
+            cursor: crosshair;
+        }
+        .controls {
+            margin-top: 10px;
+            text-align: center;
+            color: #94a3b8;
+            font-size: 14px;
+        }
+        strong { color: #f8fafc; }
+
+        #arenaWrapper { position: relative; width: 800px; height: 600px; }
+
+        #menuOverlay {
+            position: absolute; inset: 0;
+            background: rgba(10, 10, 12, 0.94);
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            border-radius: 4px; gap: 14px; z-index: 10;
+        }
+        #menuOverlay h1 { margin: 0 0 6px 0; font-size: 28px; color: #f8fafc; }
+        .menuPanel { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+        .bigBtn {
+            font-size: 16px; padding: 12px 28px; border-radius: 6px; border: 1px solid #334155;
+            background: #1e293b; color: #ecf0f1; cursor: pointer; min-width: 220px;
+        }
+        .bigBtn:hover { background: #334155; }
+        .bigBtn.primary { background: #2563eb; border-color: #2563eb; }
+        .bigBtn.primary:hover { background: #1d4ed8; }
+        #menuOverlay input[type=text] {
+            font-size: 16px; padding: 10px; border-radius: 6px; border: 1px solid #334155;
+            background: #0f172a; color: #ecf0f1; text-align: center; width: 220px;
+        }
+        #menuStatus { color: #94a3b8; font-size: 13px; min-height: 18px; text-align: center; max-width: 320px; }
+        #roomCodeBox { display: flex; align-items: center; gap: 8px; max-width: 380px; }
+        #roomCodeDisplay {
+            font-family: monospace; font-size: 12px; letter-spacing: 0.2px; background: #0f172a;
+            border: 1px solid #334155; padding: 8px 12px; border-radius: 6px; color: #f8fafc;
+            word-break: break-all; max-width: 260px; text-align: left;
+        }
+        .smallBtn {
+            font-size: 13px; padding: 6px 10px; border-radius: 6px; border: 1px solid #334155;
+            background: #1e293b; color: #ecf0f1; cursor: pointer;
+        }
+        .smallBtn:hover { background: #334155; }
+        #youIndicator {
+            position: absolute; top: 8px; left: 10px; font-size: 12px; color: #94a3b8;
+            display: flex; align-items: center; gap: 6px; z-index: 5;
+        }
+        #youIndicator .dot { width: 10px; height: 10px; border-radius: 50%; }
+        .hidden { display: none !important; }
+
+        #lobbyPlayerList {
+            max-width: 320px; min-width: 260px; text-align: left; background: #0f172a;
+            border: 1px solid #334155; border-radius: 6px; padding: 8px 12px;
+        }
+        .lobbyRow { padding: 4px 0; font-size: 14px; }
+        #lobbyTeamButtons { display: flex; gap: 10px; }
+        #lobbyTeamButtons .bigBtn { min-width: 140px; }
+        .teamBtnSelected { box-shadow: 0 0 0 3px #f8fafc inset; }
+        #btnStartMatch:disabled { opacity: 0.4; cursor: not-allowed; }
+        #btnStartMatch:disabled:hover { background: #2563eb; }
+    </style>
+    <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+</head>
+<body>
+
+    <div id="arenaWrapper">
+        <canvas id="gameCanvas" width="800" height="600"></canvas>
+
+        <div id="youIndicator" class="hidden">
+            <span class="dot"></span><span id="youIndicatorText"></span>
+        </div>
+
+        <div id="menuOverlay">
+            <h1>Battlerite-lite Arena</h1>
+
+            <div class="menuPanel" id="mainMenuPanel">
+                <button class="bigBtn primary" id="btnLocal">Play vs AI (local)</button>
+                <button class="bigBtn" id="btnHost">Host Online Match</button>
+                <button class="bigBtn" id="btnJoin">Join Online Match</button>
+            </div>
+
+            <div class="menuPanel hidden" id="hostPanel">
+                <p style="margin:0;color:#94a3b8;">Send this link to your friend:</p>
+                <div id="roomCodeBox">
+                    <span id="roomCodeDisplay">...</span>
+                    <button class="smallBtn" id="btnCopyCode">Copy Link</button>
+                </div>
+                <p style="margin:0;color:#64748b;font-size:12px;">They just click it — no download needed if this page is hosted online.</p>
+                <button class="bigBtn" id="btnCancelHost">Cancel</button>
+            </div>
+
+            <div class="menuPanel hidden" id="joinPanel">
+                <p style="margin:0;color:#94a3b8;">Paste your friend's link or code:</p>
+                <input type="text" id="joinCodeInput" placeholder="paste link or code" autocomplete="off" />
+                <button class="bigBtn primary" id="btnConnect">Connect</button>
+                <button class="bigBtn" id="btnCancelJoin">Cancel</button>
+            </div>
+
+            <div class="menuPanel hidden" id="lobbyPanel">
+                <div class="menuPanel hidden" id="lobbyRoomLinkBox">
+                    <p style="margin:0;color:#94a3b8;">Send this link to up to 3 friends:</p>
+                    <div id="roomCodeBox2" style="display:flex;align-items:center;gap:8px;max-width:380px;">
+                        <span id="roomCodeDisplay2" style="font-family: monospace; font-size: 12px; letter-spacing: 0.2px; background: #0f172a; border: 1px solid #334155; padding: 8px 12px; border-radius: 6px; color: #f8fafc; word-break: break-all; max-width: 260px; text-align: left;">...</span>
+                        <button class="smallBtn" id="btnCopyCode2">Copy Link</button>
+                    </div>
+                </div>
+                <div id="lobbyPlayerList"></div>
+                <p style="margin:0;color:#94a3b8;font-size:13px;">Pick your team (no friendly fire between teammates):</p>
+                <div id="lobbyTeamButtons">
+                    <button class="bigBtn" id="btnJoinTeamBlue" style="border-color:#3498db;">Join Team Blue</button>
+                    <button class="bigBtn" id="btnJoinTeamRed" style="border-color:#e74c3c;">Join Team Red</button>
+                </div>
+                <button class="bigBtn primary hidden" id="btnStartMatch">Start Match</button>
+                <div id="lobbyStatus" style="color:#94a3b8;font-size:13px;min-height:16px;"></div>
+                <button class="bigBtn" id="btnLeaveLobby">Leave</button>
+            </div>
+
+            <div id="menuStatus"></div>
+        </div>
+    </div>
+
+    <div class="controls">
+        <p><strong>WASD</strong>: Move | <strong>LMB</strong>: Shoot | <strong>RMB</strong>: Counter | <strong>Space</strong>: Blink | <strong>E</strong>: AoE Stun | <strong>F</strong>: Snipe (long cast, aim while casting)</p>
+        <p>Online play supports 1v1 or 2v2 (up to 4 players) &mdash; teammates never damage each other.</p>
+    </div>
+
+    <div id="netDebug" style="display:none;position:fixed;bottom:8px;left:8px;background:rgba(15,23,42,0.9);color:#94a3b8;font-family:monospace;font-size:11px;line-height:1.5;padding:8px 10px;border:1px solid #334155;border-radius:6px;max-width:360px;white-space:pre-wrap;z-index:999;"></div>
+
+<script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+
+    // Input state
+    const keys = {};
+    const mouse = { x: 0, y: 0, leftDown: false, rightDown: false };
+
+    window.addEventListener('keydown', e => {
+        if(e.code === 'Space') e.preventDefault();
+        keys[e.code] = true;
+    });
+    window.addEventListener('keyup', e => keys[e.code] = false);
+    
+    canvas.addEventListener('mousemove', e => {
+        const rect = canvas.getBoundingClientRect();
+        mouse.x = e.clientX - rect.left;
+        mouse.y = e.clientY - rect.top;
+    });
+    
+    canvas.addEventListener('mousedown', e => {
+        if (e.button === 0) mouse.leftDown = true;
+        if (e.button === 2) mouse.rightDown = true;
+    });
+    
+    canvas.addEventListener('mouseup', e => {
+        if (e.button === 0) mouse.leftDown = false;
+        if (e.button === 2) mouse.rightDown = false;
+    });
+
+    canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+    // --- Online play state ---
+    let isOnline = false;
+    let isHost = false;
+    let peer = null;
+    let conn = null; // guest's single connection to the host
+    let hostConns = []; // host-side: [{ conn, slot }], one per connected friend (up to 3)
+    let nextSlot = 1; // host is always slot 0; guests get 1, 2, 3 in join order
+    let mySlot = 0; // which slot is "me" (0 for host, assigned by host for guests)
+    let lobbyPlayers = []; // [{ slot, team, isHost }] - authoritative on host, mirrored to guests
+    let remoteInputsBySlot = {}; // host-side: latest input from each connected guest, keyed by slot
+    let lastInputAtBySlot = {}; // host-side: performance.now() of the last input received per slot, for the debug HUD
+    let guestInputsSent = 0; // guest-side: running count of input messages sent, for the debug HUD
+    let latestSnapshot = null;
+    let lastSnapshotAt = 0;
+    let connectionLost = false;
+    let connectionLostReason = '';
+    let pendingEvents = [];
+
+    // The set of champions currently in the match - length 2 for local-vs-AI
+    // or a 1v1 online match, length 4 for a 2v2 online match. All game logic
+    // (movement, collisions, AI targeting, drawing) iterates over this array
+    // instead of hardcoding two named combatants, so the same code runs a
+    // 1v1 or a 2v2 without a separate code path.
+    let activeChamps = [];
+    let champs = []; // host-side authoritative champion list for online matches
+    let guestChamps = []; // guest-side local mirror of the champion list (render-only)
+
+    const TEAM_COLORS = {
+        0: ['#3498db', '#2980b9'], // Team Blue - two shades so teammates are distinguishable
+        1: ['#e74c3c', '#c0392b']  // Team Red
+    };
+
+    canvas.addEventListener('mousedown', e => {
+        if (e.button !== 0) return;
+        if (connectionLost) { returnToMenu(); return; }
+        if (isOnline && !isHost && latestSnapshot && latestSnapshot.gameState === 'matchEnd' && conn && conn.open) {
+            conn.send({ type: 'restart' });
+        }
+    });
+
+    // Game variables
+    let projectiles = [];
+    let particles = [];
+    let floatingTexts = [];
+    let aoes = [];
+    let snipeProjectiles = [];
+    let hitStopTimer = 0;      // ms of slow-motion remaining after a big hit
+    
+    // Cooldown constants (ms)
+    const CD_SHOOT = 800;
+    const CD_COUNTER = 5000;
+    const CD_BLINK = 3000;
+    const CD_AOE = 7000;
+    const CD_SNIPE = 8000;
+
+    // Cast time constants (ms)
+    const CAST_BLINK = 300;
+    const CAST_SNIPE = 1500;
+    // While casting Snipe you can still crawl at this fraction of normal speed -
+    // enough to dodge a well-placed AoE if you react, but still a big commitment.
+    const SNIPE_CAST_SPEED_MULT = 0.4;
+
+    // --- Lightweight procedural audio (no external files) ---
+    let audioCtx = null;
+    function ensureAudio() {
+        if (!audioCtx) {
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        }
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+    }
+    window.addEventListener('keydown', ensureAudio, { once: true });
+    window.addEventListener('mousedown', ensureAudio, { once: true });
+
+    function playTone({ freq = 440, freqEnd = null, duration = 0.1, type = 'sine', volume = 0.15 }) {
+        if (!audioCtx) return;
+        const t0 = audioCtx.currentTime;
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.type = type;
+        osc.frequency.setValueAtTime(freq, t0);
+        if (freqEnd !== null) osc.frequency.linearRampToValueAtTime(freqEnd, t0 + duration);
+        gain.gain.setValueAtTime(volume, t0);
+        gain.gain.exponentialRampToValueAtTime(0.001, t0 + duration);
+        osc.connect(gain).connect(audioCtx.destination);
+        osc.start(t0);
+        osc.stop(t0 + duration + 0.02);
+    }
+
+    function playNoiseBurst({ duration = 0.15, volume = 0.2, filterFreq = 1000 }) {
+        if (!audioCtx) return;
+        const bufferSize = Math.floor(audioCtx.sampleRate * duration);
+        const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+        const data = buffer.getChannelData(0);
+        for (let i = 0; i < bufferSize; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / bufferSize);
+        const noise = audioCtx.createBufferSource();
+        noise.buffer = buffer;
+        const filter = audioCtx.createBiquadFilter();
+        filter.type = 'lowpass';
+        filter.frequency.value = filterFreq;
+        const gain = audioCtx.createGain();
+        gain.gain.setValueAtTime(volume, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + duration);
+        noise.connect(filter).connect(gain).connect(audioCtx.destination);
+        noise.start();
+    }
+
+    function playArpeggio(freqs, stepDuration, type, volume) {
+        if (!audioCtx) return;
+        freqs.forEach((f, i) => {
+            const t0 = audioCtx.currentTime + i * stepDuration;
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.type = type;
+            osc.frequency.setValueAtTime(f, t0);
+            gain.gain.setValueAtTime(volume, t0);
+            gain.gain.exponentialRampToValueAtTime(0.001, t0 + stepDuration * 0.9);
+            osc.connect(gain).connect(audioCtx.destination);
+            osc.start(t0);
+            osc.stop(t0 + stepDuration);
+        });
+    }
+
+    // Standard "overshoot then settle" easing, used to pop damage numbers in
+    function easeOutBack(x) {
+        const c1 = 1.70158;
+        const c3 = c1 + 1;
+        return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2);
+    }
+
+    // Match variables
+    let teamScore = { 0: 0, 1: 0 };
+    let currentRound = 1;
+    let gameState = 'start'; 
+    let stateTimer = 0;
+    let screenShake = 0;
+    let fightSoundPlayed = false;
+    let matchEndSoundPlayed = false;
+
+    const pillars = [
+        { x: 400, y: 300, radius: 55 }, 
+        { x: 200, y: 150, radius: 35 }, 
+        { x: 600, y: 450, radius: 35 }  
+    ];
+
+    class Champion {
+        constructor(x, y, isAI, color) {
+            this.startX = x;
+            this.startY = y;
+            this.x = x;
+            this.y = y;
+            this.radius = 16;
+            this.speed = 140;
+            this.hp = 100;
+            this.maxHp = 100;
+            this.isAI = isAI;
+            this.color = color;
+            
+            this.lastShot = 0;
+            this.lastCounter = 0;
+            this.lastBlink = 0;
+            this.lastAoe = 0;
+            this.lastSnipe = 0;
+            
+            this.counterActiveUntil = 0;
+            this.stunnedUntil = 0;
+            this.flashUntil = 0;
+            
+            // Casting mechanics
+            this.castingUntil = 0;
+            this.castTotalTime = 0;
+            this.castType = null; // null | 'blink' | 'snipe'
+            this.castAimX = x;
+            this.castAimY = y;
+            this.chargeOsc = null;
+            this.chargeGain = null;
+
+            this.aiMoveTimer = 0;
+            this.aiTargetX = x;
+            this.aiTargetY = y;
+
+            // Team/networking identity. team 0/1 controls friendly fire and
+            // color; slot 0 is always the host, 1-3 are guests in join order;
+            // inputMode says where this champion's control input comes from.
+            this.team = 0;
+            this.slot = 0;
+            this.inputMode = 'local'; // 'local' | 'remote' (isAI true overrides both)
+            this.screenFlashAlpha = 0; // red screen-edge flash when THIS champion takes damage
+        }
+
+        reset() {
+            this.x = this.startX;
+            this.y = this.startY;
+            this.hp = this.maxHp;
+            this.lastShot = 0;
+            this.lastCounter = 0;
+            this.lastBlink = 0;
+            this.lastAoe = 0;
+            this.lastSnipe = 0;
+            this.counterActiveUntil = 0;
+            this.stunnedUntil = 0;
+            this.castingUntil = 0;
+            this.castType = null;
+            this.screenFlashAlpha = 0;
+            this.stopSnipeChargeSound();
+        }
+
+        // Nearest living champion on the opposing team - used by AI for
+        // targeting, and by the AI's snipe-cast aim tracking.
+        nearestEnemy() {
+            let best = null, bestDist = Infinity;
+            for (const c of activeChamps) {
+                if (c === this || c.team === this.team || c.hp <= 0) continue;
+                const d = Math.hypot(c.x - this.x, c.y - this.y);
+                if (d < bestDist) { bestDist = d; best = c; }
+            }
+            return best;
+        }
+
+        // Where this champion's control input comes from this tick. Returns
+        // null for AI (caller falls back to AI logic), or { keys, mouse }.
+        getInputSource() {
+            if (this.isAI) return null;
+            if (this.inputMode === 'remote') {
+                return remoteInputsBySlot[this.slot] || { keys: {}, mouse: { x: this.x, y: this.y, leftDown: false, rightDown: false } };
+            }
+            return { keys, mouse };
+        }
+
+        update(dt, now) {
+            if (this.hp <= 0) return;
+
+            // 1. Check Stun - Interrupts casting and stops movement
+            if (now < this.stunnedUntil) {
+                if (this.castType) {
+                    createFloatingText(this.x, this.y - 30, "INTERRUPTED", '#e74c3c');
+                    if (this.castType === 'snipe') {
+                        this.stopSnipeChargeSound();
+                        pendingEvents.push({ tag: 'snipe_charge_stop', who: this.slot });
+                    }
+                }
+                this.castType = null;
+                this.castingUntil = 0;
+                return;
+            }
+
+            // 2. Resolve a cast that just finished
+            if (this.castType && now >= this.castingUntil) {
+                if (this.castType === 'blink') {
+                    this.executeBlink(this.castAimX, this.castAimY, now);
+                } else if (this.castType === 'snipe') {
+                    this.executeSnipe(this.castAimX, this.castAimY, now);
+                }
+                this.castType = null;
+            }
+
+            // 3. Currently casting - snipe allows a slow crawl so you're not a
+            // guaranteed sitting duck for an AoE; other casts (blink) fully root.
+            if (now < this.castingUntil) {
+                const src = this.getInputSource();
+
+                if (this.castType === 'snipe') {
+                    // Keep tracking the aim point right up until it fires -
+                    // that's the "slow flick": the whole cast window to adjust
+                    // where it's going to land.
+                    if (src) {
+                        this.castAimX = src.mouse.x;
+                        this.castAimY = src.mouse.y;
+                    } else {
+                        const target = this.nearestEnemy();
+                        if (target) { this.castAimX = target.x; this.castAimY = target.y; }
+                    }
+
+                    let dx = 0, dy = 0;
+                    if (src) {
+                        if (src.keys['KeyW']) dy -= 1;
+                        if (src.keys['KeyS']) dy += 1;
+                        if (src.keys['KeyA']) dx -= 1;
+                        if (src.keys['KeyD']) dx += 1;
+                    } else {
+                        // AI keeps drifting toward its juke target while casting
+                        this.aiMoveTimer -= dt;
+                        if (this.aiMoveTimer <= 0) {
+                            const target = this.nearestEnemy();
+                            const tx = target ? target.x : this.x, ty = target ? target.y : this.y;
+                            this.aiTargetX = tx + (Math.random() * 400 - 200);
+                            this.aiTargetY = ty + (Math.random() * 400 - 200);
+                            this.aiMoveTimer = 0.4 + Math.random() * 0.8;
+                        }
+                        const distToTarget = Math.hypot(this.aiTargetX - this.x, this.aiTargetY - this.y);
+                        if (distToTarget > 20) {
+                            dx = (this.aiTargetX - this.x) / distToTarget;
+                            dy = (this.aiTargetY - this.y) / distToTarget;
+                        }
+                    }
+                    this.applyMovement(dx, dy, SNIPE_CAST_SPEED_MULT, dt);
+                }
+
+                // Wind-up particles
+                if (Math.random() < 0.4) {
+                    this.createParticles(this.x, this.y, '#9b59b6', 1, 0.3);
+                }
+                return; 
+            }
+
+            let dx = 0;
+            let dy = 0;
+
+            const src = this.getInputSource();
+
+            if (src) {
+                if (src.keys['KeyW']) dy -= 1;
+                if (src.keys['KeyS']) dy += 1;
+                if (src.keys['KeyA']) dx -= 1;
+                if (src.keys['KeyD']) dx += 1;
+
+                if (src.mouse.leftDown && now - this.lastShot > CD_SHOOT) {
+                    this.shoot(src.mouse.x, src.mouse.y, now);
+                }
+                if (src.mouse.rightDown && now - this.lastCounter > CD_COUNTER) {
+                    this.activateCounter(now);
+                }
+                if (src.keys['Space'] && now - this.lastBlink > CD_BLINK) {
+                    this.startBlink(src.mouse.x, src.mouse.y, now);
+                }
+                if (src.keys['KeyE'] && now - this.lastAoe > CD_AOE) {
+                    this.castAoe(src.mouse.x, src.mouse.y, now);
+                }
+                if (src.keys['KeyF'] && now - this.lastSnipe > CD_SNIPE) {
+                    this.startSnipe(src.mouse.x, src.mouse.y, now);
+                }
+
+            } else {
+                // AI Logic
+                const target = this.nearestEnemy();
+                this.aiMoveTimer -= dt;
+                if (this.aiMoveTimer <= 0) {
+                    const tx = target ? target.x : this.x, ty = target ? target.y : this.y;
+                    this.aiTargetX = tx + (Math.random() * 400 - 200);
+                    this.aiTargetY = ty + (Math.random() * 400 - 200);
+                    this.aiMoveTimer = 0.5 + Math.random() * 1.5;
+                }
+
+                const distToTarget = Math.hypot(this.aiTargetX - this.x, this.aiTargetY - this.y);
+                if (distToTarget > 20) {
+                    dx = (this.aiTargetX - this.x) / distToTarget;
+                    dy = (this.aiTargetY - this.y) / distToTarget;
+                }
+
+                if (target) {
+                    if (now - this.lastShot > CD_SHOOT + 400 && Math.random() < 0.08) {
+                        this.shoot(target.x, target.y, now);
+                    }
+                    if (now - this.lastAoe > CD_AOE + 1000 && Math.random() < 0.02) {
+                        this.castAoe(target.x, target.y, now);
+                    }
+                    if (now - this.lastSnipe > CD_SNIPE + 1500 && Math.random() < 0.015) {
+                        this.startSnipe(target.x, target.y, now);
+                    }
+                }
+            }
+
+            this.applyMovement(dx, dy, 1, dt);
+        }
+
+        // Moves in direction (dx, dy) at this.speed * speedMult, then clamps to
+        // the arena bounds and resolves pillar collisions. Shared by normal
+        // movement and the slowed crawl during a snipe cast.
+        applyMovement(dx, dy, speedMult, dt) {
+            if (dx !== 0 || dy !== 0) {
+                const length = Math.hypot(dx, dy);
+                this.x += (dx / length) * this.speed * speedMult * dt;
+                this.y += (dy / length) * this.speed * speedMult * dt;
+            }
+
+            this.x = Math.max(this.radius, Math.min(canvas.width - this.radius, this.x));
+            this.y = Math.max(this.radius, Math.min(canvas.height - this.radius, this.y));
+
+            for (let pillar of pillars) {
+                const dist = Math.hypot(this.x - pillar.x, this.y - pillar.y);
+                const minDist = this.radius + pillar.radius;
+
+                if (dist < minDist) {
+                    const overlap = minDist - dist;
+                    const angle = Math.atan2(this.y - pillar.y, this.x - pillar.x);
+                    this.x += Math.cos(angle) * overlap;
+                    this.y += Math.sin(angle) * overlap;
+                }
+            }
+        }
+
+        shoot(targetX, targetY, now) {
+            this.lastShot = now;
+            pendingEvents.push({ tag: 'shoot' });
+            playTone({ freq: 620, freqEnd: 480, duration: 0.07, type: 'square', volume: 0.07 });
+            const angle = Math.atan2(targetY - this.y, targetX - this.x);
+            projectiles.push({
+                x: this.x + Math.cos(angle) * this.radius,
+                y: this.y + Math.sin(angle) * this.radius,
+                vx: Math.cos(angle) * 350,
+                vy: Math.sin(angle) * 350,
+                owner: this,
+                radius: 6,
+                damage: 10
+            });
+        }
+
+        activateCounter(now) {
+            this.lastCounter = now;
+            this.counterActiveUntil = now + 1000;
+            pendingEvents.push({ tag: 'counter' });
+            playTone({ freq: 500, freqEnd: 900, duration: 0.15, type: 'triangle', volume: 0.12 });
+            createFloatingText(this.x, this.y - 30, "COUNTER!", '#3498db');
+        }
+
+        startBlink(targetX, targetY, now) {
+            this.lastBlink = now; 
+            this.castTotalTime = CAST_BLINK;
+            this.castingUntil = now + this.castTotalTime;
+            this.castType = 'blink';
+            this.castAimX = targetX;
+            this.castAimY = targetY;
+            pendingEvents.push({ tag: 'blink_start' });
+            playTone({ freq: 300, freqEnd: 550, duration: 0.15, type: 'sine', volume: 0.08 });
+        }
+
+        executeBlink(targetX, targetY, now) {
+            const angle = Math.atan2(targetY - this.y, targetX - this.x);
+            const blinkDistance = 160;
+            
+            pendingEvents.push({ tag: 'blink_fire' });
+            playTone({ freq: 900, freqEnd: 200, duration: 0.12, type: 'sine', volume: 0.14 });
+            this.createParticles(this.x, this.y, this.color, 15);
+            
+            this.x += Math.cos(angle) * blinkDistance;
+            this.y += Math.sin(angle) * blinkDistance;
+            
+            this.x = Math.max(this.radius, Math.min(canvas.width - this.radius, this.x));
+            this.y = Math.max(this.radius, Math.min(canvas.height - this.radius, this.y));
+            
+            this.createParticles(this.x, this.y, '#ecf0f1', 15);
+        }
+
+        castAoe(targetX, targetY, now) {
+            this.lastAoe = now;
+            pendingEvents.push({ tag: 'aoe_cast' });
+            playTone({ freq: 160, freqEnd: 90, duration: 0.3, type: 'sawtooth', volume: 0.08 });
+            aoes.push({
+                x: targetX,
+                y: targetY,
+                radius: 58, // buffed from 45 (+~30%) - easier to land
+                spawnTime: now,
+                triggerTime: now + 1200, 
+                owner: this,
+                damage: 15,
+                stunDuration: 1500
+            });
+        }
+
+        startSnipe(targetX, targetY, now) {
+            this.lastSnipe = now;
+            this.castTotalTime = CAST_SNIPE;
+            this.castingUntil = now + this.castTotalTime;
+            this.castType = 'snipe';
+            this.castAimX = targetX;
+            this.castAimY = targetY;
+            pendingEvents.push({ tag: 'snipe_charge_start', who: this.slot });
+            this.startSnipeChargeSound(CAST_SNIPE / 1000);
+        }
+
+        startSnipeChargeSound(durationSec) {
+            if (!audioCtx) return;
+            this.stopSnipeChargeSound();
+            const t0 = audioCtx.currentTime;
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.type = 'sawtooth';
+            osc.frequency.setValueAtTime(140, t0);
+            osc.frequency.linearRampToValueAtTime(920, t0 + durationSec);
+            gain.gain.setValueAtTime(0.0001, t0);
+            gain.gain.linearRampToValueAtTime(0.05, t0 + 0.05);
+            gain.gain.setValueAtTime(0.05, t0 + Math.max(0, durationSec - 0.05));
+            gain.gain.linearRampToValueAtTime(0.0001, t0 + durationSec);
+            osc.connect(gain).connect(audioCtx.destination);
+            osc.start(t0);
+            osc.stop(t0 + durationSec + 0.05);
+            this.chargeOsc = osc;
+            this.chargeGain = gain;
+        }
+
+        stopSnipeChargeSound() {
+            if (this.chargeOsc && audioCtx) {
+                try {
+                    const t0 = audioCtx.currentTime;
+                    this.chargeGain.gain.cancelScheduledValues(t0);
+                    this.chargeGain.gain.setValueAtTime(this.chargeGain.gain.value, t0);
+                    this.chargeGain.gain.linearRampToValueAtTime(0.0001, t0 + 0.05);
+                    this.chargeOsc.stop(t0 + 0.06);
+                } catch (e) { /* already stopped */ }
+            }
+            this.chargeOsc = null;
+            this.chargeGain = null;
+        }
+
+        // Fires a fast but non-instant projectile - it has real travel time,
+        // so a target can juke it after the long cast finally releases.
+        executeSnipe(targetX, targetY, now) {
+            this.stopSnipeChargeSound();
+            const who = this.slot;
+            pendingEvents.push({ tag: 'snipe_charge_stop', who });
+            pendingEvents.push({ tag: 'snipe_fire', who });
+            const angle = Math.atan2(targetY - this.y, targetX - this.x);
+            const speed = 620;
+
+            playNoiseBurst({ duration: 0.09, volume: 0.25, filterFreq: 3200 });
+            playTone({ freq: 1300, freqEnd: 500, duration: 0.06, type: 'square', volume: 0.14 });
+
+            // Muzzle flash
+            this.createParticles(this.x, this.y, '#fff', 6, 1.6);
+            this.createParticles(this.x, this.y, this.color, 8, 1.2);
+            screenShake = Math.min(screenShake + 5, 15);
+
+            snipeProjectiles.push({
+                x: this.x + Math.cos(angle) * this.radius,
+                y: this.y + Math.sin(angle) * this.radius,
+                vx: Math.cos(angle) * speed,
+                vy: Math.sin(angle) * speed,
+                owner: this,
+                radius: 7,
+                damage: 40
+            });
+        }
+
+        createParticles(x, y, color, count = 10, speedMult = 1) {
+            for(let i=0; i<count; i++) {
+                particles.push({
+                    x: x, y: y,
+                    vx: (Math.random() - 0.5) * 250 * speedMult,
+                    vy: (Math.random() - 0.5) * 250 * speedMult,
+                    life: 0.4 + Math.random() * 0.2,
+                    maxLife: 0.6,
+                    color: color
+                });
+            }
+        }
+
+        takeDamage(amount, now) {
+            this.hp -= amount;
+            this.flashUntil = now + 100;
+            const isBigHit = amount >= 30;
+
+            screenShake = Math.min(screenShake + (isBigHit ? 12 : 5), 18);
+            this.createParticles(this.x, this.y, '#e74c3c', isBigHit ? 20 : 12, isBigHit ? 1.4 : 1);
+            createFloatingText(this.x, this.y - 20, `-${amount}`, '#e74c3c', isBigHit ? 1.5 : 1);
+            pendingEvents.push({ tag: isBigHit ? 'hit_big' : 'hit_small' });
+
+            if (isBigHit) {
+                hitStopTimer = 90;
+                playNoiseBurst({ duration: 0.18, volume: 0.28, filterFreq: 450 });
+                playTone({ freq: 90, duration: 0.2, type: 'sine', volume: 0.18 });
+            } else {
+                playTone({ freq: 200, freqEnd: 120, duration: 0.07, type: 'square', volume: 0.07 });
+            }
+
+            this.screenFlashAlpha = Math.min(this.screenFlashAlpha + (isBigHit ? 0.5 : 0.25), 0.6);
+        }
+
+        draw(ctx, now) {
+            if (this.hp <= 0) return;
+
+            ctx.shadowColor = 'rgba(0,0,0,0.5)';
+            ctx.shadowBlur = 10;
+            ctx.shadowOffsetY = 5;
+
+            // Counter Shield
+            if (now < this.counterActiveUntil) {
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.radius + 10, 0, Math.PI * 2);
+                ctx.fillStyle = 'rgba(52, 152, 219, 0.4)';
+                ctx.fill();
+                ctx.lineWidth = 2;
+                ctx.strokeStyle = '#3498db';
+                ctx.stroke();
+            }
+
+            // Snipe aim telegraph - shown for the whole cast so the target
+            // (or the player themself) can see where it's currently pointed.
+            if (this.castType === 'snipe' && now < this.castingUntil) {
+                const telegraphColor = (player && this.team === player.team) ? 'rgba(241, 196, 15, 0.55)' : 'rgba(231, 76, 60, 0.55)';
+                ctx.save();
+                ctx.strokeStyle = telegraphColor;
+                ctx.lineWidth = 2;
+                ctx.setLineDash([6, 6]);
+                ctx.beginPath();
+                ctx.moveTo(this.x, this.y);
+                ctx.lineTo(this.castAimX, this.castAimY);
+                ctx.stroke();
+                ctx.setLineDash([]);
+
+                // Crosshair at the current aim point, pulsing as the cast nears completion
+                const progress = 1 - (this.castingUntil - now) / this.castTotalTime;
+                const pulse = 6 + Math.sin(now / 60) * 2 * progress;
+                ctx.strokeStyle = telegraphColor;
+                ctx.lineWidth = 1.5;
+                ctx.beginPath();
+                ctx.arc(this.castAimX, this.castAimY, pulse, 0, Math.PI * 2);
+                ctx.moveTo(this.castAimX - pulse - 4, this.castAimY);
+                ctx.lineTo(this.castAimX - pulse + 2, this.castAimY);
+                ctx.moveTo(this.castAimX + pulse - 2, this.castAimY);
+                ctx.lineTo(this.castAimX + pulse + 4, this.castAimY);
+                ctx.moveTo(this.castAimX, this.castAimY - pulse - 4);
+                ctx.lineTo(this.castAimX, this.castAimY - pulse + 2);
+                ctx.moveTo(this.castAimX, this.castAimY + pulse - 2);
+                ctx.lineTo(this.castAimX, this.castAimY + pulse + 4);
+                ctx.stroke();
+                ctx.restore();
+            }
+
+            // Body
+            ctx.beginPath();
+            ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+            ctx.fillStyle = (now < this.flashUntil) ? '#fff' : this.color;
+            ctx.fill();
+            ctx.lineWidth = 3;
+            ctx.strokeStyle = '#111';
+            ctx.stroke();
+            ctx.shadowColor = 'transparent';
+
+            // Stunned indicator
+            if (now < this.stunnedUntil) {
+                ctx.fillStyle = '#f1c40f';
+                for(let i=0; i<3; i++) {
+                    const angle = (now / 150) + (i * Math.PI * 2 / 3);
+                    const sX = this.x + Math.cos(angle) * 15;
+                    const sY = this.y - this.radius - 10 + Math.sin(angle) * 5;
+                    ctx.beginPath();
+                    ctx.arc(sX, sY, 3, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            }
+
+            // Health Bar
+            const barWidth = 44;
+            const barHeight = 6;
+            const yOffset = 28;
+            
+            ctx.fillStyle = '#c0392b';
+            ctx.fillRect(this.x - barWidth/2, this.y - this.radius - yOffset, barWidth, barHeight);
+            
+            ctx.fillStyle = '#2ecc71';
+            const hpWidth = Math.max(0, barWidth * (this.hp / this.maxHp));
+            ctx.fillRect(this.x - barWidth/2, this.y - this.radius - yOffset, hpWidth, barHeight);
+            
+            ctx.strokeStyle = '#000';
+            ctx.lineWidth = 1;
+            ctx.strokeRect(this.x - barWidth/2, this.y - this.radius - yOffset, barWidth, barHeight);
+
+            // Cast Bar
+            if (now < this.castingUntil) {
+                const castLeft = this.castingUntil - now;
+                const progress = 1 - (castLeft / this.castTotalTime);
+                const castBarWidth = 36;
+                const castYOffset = -15;
+
+                ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
+                ctx.fillRect(this.x - castBarWidth/2, this.y - castYOffset, castBarWidth, 4);
+                
+                ctx.fillStyle = this.castType === 'snipe' ? '#e74c3c' : '#9b59b6';
+                ctx.fillRect(this.x - castBarWidth/2, this.y - castYOffset, castBarWidth * progress, 4);
+            }
+        }
+    }
+
+    let player, enemy; // player = the locally-viewed champion; enemy = kept for local-vs-AI mode only
+
+    // Is anyone on this team still alive? Round ends the moment one whole
+    // team is wiped - this is a 1-vs-1 check when there are 2 champions in
+    // play, and a whole-team check when there are 4.
+    function teamAlive(team) {
+        return activeChamps.some(c => c.team === team && c.hp > 0);
+    }
+
+    function initMatchGeneric() {
+        teamScore = { 0: 0, 1: 0 };
+        currentRound = 1;
+        matchEndSoundPlayed = false;
+        startRound();
+    }
+
+    function startRound() {
+        activeChamps.forEach(c => c.reset());
+        projectiles = [];
+        particles = [];
+        aoes = [];
+        floatingTexts = [];
+        snipeProjectiles = [];
+        gameState = 'start';
+        stateTimer = performance.now() + 2000;
+        fightSoundPlayed = false;
+    }
+
+    function createFloatingText(x, y, text, color, scale = 1) {
+        floatingTexts.push({
+            x: x, y: y,
+            text: text,
+            color: color,
+            life: 0.8, maxLife: 0.8,
+            scale: scale,
+            age: 0
+        });
+    }
+
+    function drawGrid() {
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.03)';
+        ctx.lineWidth = 1;
+        const gridSize = 40;
+        ctx.beginPath();
+        for (let x = 0; x <= canvas.width; x += gridSize) {
+            ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height);
+        }
+        for (let y = 0; y <= canvas.height; y += gridSize) {
+            ctx.moveTo(0, y); ctx.lineTo(canvas.width, y);
+        }
+        ctx.stroke();
+    }
+
+    function drawScoreboard() {
+        ctx.fillStyle = 'rgba(15, 23, 42, 0.8)';
+        ctx.fillRect(canvas.width/2 - 100, 0, 200, 40);
+        
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 20px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(`${teamScore[0]} - ROUND ${currentRound} - ${teamScore[1]}`, canvas.width/2, 27);
+
+        ctx.fillStyle = '#3498db';
+        if(teamScore[0] >= 1) ctx.beginPath(), ctx.arc(canvas.width/2 - 70, 20, 5, 0, Math.PI*2), ctx.fill();
+        if(teamScore[0] >= 2) ctx.beginPath(), ctx.arc(canvas.width/2 - 85, 20, 5, 0, Math.PI*2), ctx.fill();
+        
+        ctx.fillStyle = '#e74c3c';
+        if(teamScore[1] >= 1) ctx.beginPath(), ctx.arc(canvas.width/2 + 70, 20, 5, 0, Math.PI*2), ctx.fill();
+        if(teamScore[1] >= 2) ctx.beginPath(), ctx.arc(canvas.width/2 + 85, 20, 5, 0, Math.PI*2), ctx.fill();
+    }
+
+    function drawCooldowns(now, champ = player, activeState = gameState) {
+        if (activeState !== 'playing') return;
+
+        const iconSize = 40;
+        const gap = 15;
+        const startX = canvas.width / 2 - (iconSize * 2.5 + gap * 2);
+        const y = canvas.height - iconSize - 20;
+
+        const abilities = [
+            { name: "LMB", cd: CD_SHOOT, last: champ.lastShot, color: '#f1c40f' },
+            { name: "RMB", cd: CD_COUNTER, last: champ.lastCounter, color: '#3498db' },
+            { name: "SPACE", cd: CD_BLINK, last: champ.lastBlink, color: '#9b59b6' },
+            { name: "E (AOE)", cd: CD_AOE, last: champ.lastAoe, color: '#e67e22' },
+            { name: "F (SNIPE)", cd: CD_SNIPE, last: champ.lastSnipe, color: '#e74c3c' }
+        ];
+
+        abilities.forEach((ab, index) => {
+            const x = startX + (iconSize + gap) * index;
+            
+            ctx.fillStyle = '#1e293b';
+            ctx.fillRect(x, y, iconSize, iconSize);
+            
+            const timePassed = now - ab.last;
+            const ratio = Math.min(timePassed / ab.cd, 1);
+            
+            if (ratio < 1) {
+                ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+                ctx.fillRect(x, y, iconSize, iconSize * (1 - ratio));
+            } else {
+                const pulse = 0.55 + 0.45 * Math.sin(now / 220);
+                ctx.save();
+                ctx.shadowColor = ab.color;
+                ctx.shadowBlur = 10 * pulse;
+                ctx.globalAlpha = pulse;
+                ctx.strokeStyle = ab.color;
+                ctx.lineWidth = 2;
+                ctx.strokeRect(x, y, iconSize, iconSize);
+                ctx.restore();
+            }
+
+            ctx.fillStyle = '#fff';
+            ctx.font = '10px sans-serif';
+            ctx.textAlign = 'center';
+            ctx.fillText(ab.name, x + iconSize/2, y + iconSize - 5);
+        });
+    }
+
+    let lastTime = performance.now();
+
+    let runningMode = null; // null | 'sim' (local/host) | 'guest'
+
+    function gameLoop(now) {
+        if (runningMode !== 'sim') return;
+        try {
+            gameLoopInner(now);
+        } catch (err) {
+            console.error('gameLoop error (recovered):', err);
+            try { ctx.restore(); } catch (e) {}
+            ctx.setTransform(1, 0, 0, 1, 0, 0);
+        }
+        requestAnimationFrame(gameLoop);
+    }
+
+    function gameLoopInner(now) {
+        const rawDeltaMs = now - lastTime;
+        lastTime = now;
+        let dt = rawDeltaMs / 1000;
+
+        if (hitStopTimer > 0) {
+            hitStopTimer -= rawDeltaMs;
+            dt *= 0.08; // brief slow-motion to sell a big hit
+        }
+
+        ctx.save();
+        if (screenShake > 0) {
+            const shakeX = (Math.random() - 0.5) * screenShake;
+            const shakeY = (Math.random() - 0.5) * screenShake;
+            ctx.translate(shakeX, shakeY);
+            screenShake *= 0.9; 
+            if (screenShake < 0.5) screenShake = 0;
+        }
+
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        drawGrid();
+
+        // Draw Pillars
+        ctx.shadowColor = 'rgba(0,0,0,0.6)';
+        ctx.shadowBlur = 15;
+        ctx.shadowOffsetY = 8;
+        ctx.strokeStyle = '#0f172a';
+        ctx.lineWidth = 4;
+        
+        for (let pillar of pillars) {
+            const grad = ctx.createRadialGradient(
+                pillar.x - pillar.radius * 0.35, pillar.y - pillar.radius * 0.35, pillar.radius * 0.1,
+                pillar.x, pillar.y, pillar.radius
+            );
+            grad.addColorStop(0, '#475569');
+            grad.addColorStop(1, '#1e293b');
+            ctx.fillStyle = grad;
+            ctx.beginPath();
+            ctx.arc(pillar.x, pillar.y, pillar.radius, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+        }
+        ctx.shadowColor = 'transparent';
+
+        // --- Game State Logic ---
+        if (gameState === 'playing') {
+            activeChamps.forEach(c => c.update(dt, now));
+            // Decay each champion's own screen-edge flash - kept per-champion
+            // (rather than one shared global) so this works the same whether
+            // there are 2 champions or 4.
+            activeChamps.forEach(c => {
+                if (c.screenFlashAlpha > 0) c.screenFlashAlpha = Math.max(0, c.screenFlashAlpha - dt * 1.8);
+            });
+
+            if (!teamAlive(0) || !teamAlive(1)) {
+                gameState = 'roundEnd';
+                stateTimer = now + 3000;
+                if (teamAlive(0)) teamScore[0]++;
+                else teamScore[1]++;
+            }
+        } else if (gameState === 'roundEnd') {
+            if (now > stateTimer) {
+                if (teamScore[0] >= 2 || teamScore[1] >= 2) {
+                    gameState = 'matchEnd';
+                } else {
+                    currentRound++;
+                    startRound();
+                }
+            }
+        } else if (gameState === 'matchEnd') {
+            if (mouse.leftDown) initMatchGeneric();
+        }
+
+        // --- Update AoEs ---
+        for (let i = aoes.length - 1; i >= 0; i--) {
+            let a = aoes[i];
+            const progress = Math.min((now - a.spawnTime) / (a.triggerTime - a.spawnTime), 1);
+            
+            const aoeIsMine = a.owner.team === player.team;
+            ctx.beginPath();
+            ctx.arc(a.x, a.y, a.radius, 0, Math.PI * 2);
+            ctx.fillStyle = aoeIsMine ? 'rgba(230, 126, 34, 0.1)' : 'rgba(231, 76, 60, 0.1)';
+            ctx.fill();
+            
+            ctx.beginPath();
+            ctx.arc(a.x, a.y, a.radius * progress, 0, Math.PI * 2);
+            ctx.fillStyle = aoeIsMine ? 'rgba(230, 126, 34, 0.4)' : 'rgba(231, 76, 60, 0.4)';
+            ctx.fill();
+            
+            ctx.lineWidth = 2;
+            ctx.strokeStyle = aoeIsMine ? '#e67e22' : '#e74c3c';
+            ctx.stroke();
+
+            if (now >= a.triggerTime) {
+                screenShake = 10;
+                pendingEvents.push({ tag: 'aoe_trigger' });
+                playNoiseBurst({ duration: 0.22, volume: 0.22, filterFreq: 550 });
+                playTone({ freq: 110, freqEnd: 60, duration: 0.25, type: 'sine', volume: 0.14 });
+                
+                for(let j=0; j<20; j++) {
+                    particles.push({
+                        x: a.x, y: a.y,
+                        vx: (Math.random() - 0.5) * 400, vy: (Math.random() - 0.5) * 400,
+                        life: 0.3 + Math.random()*0.3, maxLife: 0.6,
+                        color: '#f39c12'
+                    });
+                }
+
+                // Friendly Fire Fix: only champions on the OPPOSING team can be hit
+                for (let target of activeChamps) {
+                    if (target.team !== a.owner.team && target.hp > 0 && Math.hypot(a.x - target.x, a.y - target.y) < a.radius + target.radius) {
+                        target.takeDamage(a.damage, now);
+                        target.stunnedUntil = now + a.stunDuration;
+                        createFloatingText(target.x, target.y - 40, "STUNNED!", '#f1c40f', 1.2);
+                    }
+                }
+                
+                aoes.splice(i, 1);
+            }
+        }
+
+        // --- Update Snipe Projectiles ---
+        if (gameState === 'playing') {
+            for (let i = snipeProjectiles.length - 1; i >= 0; i--) {
+                let p = snipeProjectiles[i];
+                p.x += p.vx * dt;
+                p.y += p.vy * dt;
+
+                // Bright trail
+                const snipeIsMine = p.owner.team === player.team;
+                particles.push({
+                    x: p.x, y: p.y, vx: -p.vx * 0.05, vy: -p.vy * 0.05,
+                    life: 0.18, maxLife: 0.18,
+                    color: snipeIsMine ? 'rgba(241, 196, 15, 0.6)' : 'rgba(231, 76, 60, 0.6)'
+                });
+
+                ctx.save();
+                ctx.shadowColor = snipeIsMine ? '#f1c40f' : '#e74c3c';
+                ctx.shadowBlur = 14;
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+                ctx.fillStyle = '#fff';
+                ctx.fill();
+                ctx.restore();
+
+                let hit = false;
+
+                for (let pillar of pillars) {
+                    if (Math.hypot(p.x - pillar.x, p.y - pillar.y) < p.radius + pillar.radius) {
+                        hit = true;
+                        for (let j = 0; j < 8; j++) {
+                            particles.push({
+                                x: p.x, y: p.y,
+                                vx: (Math.random() - 0.5) * 200, vy: (Math.random() - 0.5) * 200,
+                                life: 0.3, maxLife: 0.3, color: '#94a3b8'
+                            });
+                        }
+                        playNoiseBurst({ duration: 0.08, volume: 0.15, filterFreq: 1500 });
+                        break;
+                    }
+                }
+
+                if (!hit) {
+                    for (const target of activeChamps) {
+                        if (target.team === p.owner.team || target.hp <= 0) continue;
+                        if (Math.hypot(p.x - target.x, p.y - target.y) < target.radius + p.radius) {
+                            if (now < target.counterActiveUntil) {
+                                target.counterActiveUntil = 0;
+                                target.createParticles(target.x, target.y, '#3498db', 24);
+                                createFloatingText(target.x, target.y - 20, "BLOCKED!", '#3498db', 1.3);
+                                pendingEvents.push({ tag: 'block' });
+                                playTone({ freq: 1000, freqEnd: 1500, duration: 0.12, type: 'triangle', volume: 0.16 });
+                            } else {
+                                target.takeDamage(p.damage, now);
+                                target.createParticles(target.x, target.y, '#fff', 10, 1.3);
+                            }
+                            hit = true;
+                            break;
+                        }
+                    }
+                }
+
+                if (hit || p.x < -20 || p.x > canvas.width + 20 || p.y < -20 || p.y > canvas.height + 20) {
+                    snipeProjectiles.splice(i, 1);
+                }
+            }
+        }
+
+        // --- Update Projectiles ---
+        if (gameState === 'playing') {
+            for (let i = projectiles.length - 1; i >= 0; i--) {
+                let p = projectiles[i];
+                p.x += p.vx * dt;
+                p.y += p.vy * dt;
+
+                const shotIsMine = p.owner.team === player.team;
+                particles.push({
+                    x: p.x, y: p.y, vx: 0, vy: 0,
+                    life: 0.1, maxLife: 0.1,
+                    color: shotIsMine ? 'rgba(241, 196, 15, 0.5)' : 'rgba(230, 126, 34, 0.5)'
+                });
+
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+                ctx.fillStyle = shotIsMine ? '#f1c40f' : '#e67e22';
+                ctx.fill();
+
+                let hit = false;
+                
+                for (let pillar of pillars) {
+                    if (Math.hypot(p.x - pillar.x, p.y - pillar.y) < p.radius + pillar.radius) {
+                        hit = true;
+                        for(let j=0; j<6; j++) {
+                            particles.push({
+                                x: p.x, y: p.y,
+                                vx: (Math.random()-0.5)*150, vy: (Math.random()-0.5)*150,
+                                life: 0.3, maxLife: 0.3, color: '#94a3b8'
+                            });
+                        }
+                        break;
+                    }
+                }
+
+                if (!hit) {
+                    for (const target of activeChamps) {
+                        if (target.team === p.owner.team || target.hp <= 0) continue;
+                        if (Math.hypot(p.x - target.x, p.y - target.y) < target.radius + p.radius) {
+                            if (now < target.counterActiveUntil) {
+                                target.counterActiveUntil = 0;
+                                target.createParticles(target.x, target.y, '#3498db', 20); 
+                                createFloatingText(target.x, target.y - 20, "BLOCKED!", '#3498db');
+                                pendingEvents.push({ tag: 'block' });
+                            } else {
+                                target.takeDamage(p.damage, now);
+                            }
+                            hit = true;
+                            break;
+                        }
+                    }
+                }
+
+                if (hit || p.x < 0 || p.x > canvas.width || p.y < 0 || p.y > canvas.height) {
+                    projectiles.splice(i, 1);
+                }
+            }
+        }
+
+        // --- Update Particles ---
+        for (let i = particles.length - 1; i >= 0; i--) {
+            let p = particles[i];
+            p.x += p.vx * dt;
+            p.y += p.vy * dt;
+            p.life -= dt;
+            
+            if (p.life <= 0) {
+                particles.splice(i, 1);
+            } else {
+                ctx.globalAlpha = p.life / p.maxLife;
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, 3 * (p.life/p.maxLife), 0, Math.PI * 2);
+                ctx.fillStyle = p.color;
+                ctx.fill();
+                ctx.globalAlpha = 1.0;
+            }
+        }
+
+        // --- Draw Entities ---
+        activeChamps.forEach(c => c.draw(ctx, now));
+
+        // --- Draw Overlays ---
+        ctx.textAlign = 'center';
+        if (gameState === 'start') {
+            ctx.fillStyle = 'rgba(0,0,0,0.5)';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.fillStyle = '#fff';
+            
+            let timeLeft = stateTimer - now;
+            if (timeLeft > 1000) {
+                ctx.font = 'bold 48px sans-serif';
+                ctx.fillText(`ROUND ${currentRound}`, canvas.width/2, canvas.height/2);
+            } else if (timeLeft > 0) {
+                ctx.font = 'bold 64px sans-serif';
+                ctx.fillStyle = '#e74c3c';
+                ctx.fillText("FIGHT!", canvas.width/2, canvas.height/2);
+                if (!fightSoundPlayed) {
+                    playTone({ freq: 220, freqEnd: 440, duration: 0.3, type: 'square', volume: 0.15 });
+                    fightSoundPlayed = true;
+                    pendingEvents.push({ tag: 'fight' });
+                }
+            } else {
+                gameState = 'playing';
+            }
+        } else if (gameState === 'roundEnd') {
+            ctx.fillStyle = 'rgba(0,0,0,0.5)';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.fillStyle = '#fff';
+            ctx.font = 'bold 48px sans-serif';
+            const winnerText = teamAlive(player.team) ? "YOUR TEAM WINS THE ROUND" : "OPPONENTS WIN THE ROUND";
+            ctx.fillText(winnerText, canvas.width/2, canvas.height/2);
+        } else if (gameState === 'matchEnd') {
+            ctx.fillStyle = 'rgba(0,0,0,0.8)';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.fillStyle = '#fff';
+            ctx.font = 'bold 64px sans-serif';
+            ctx.fillText(teamScore[player.team] >= 2 ? "VICTORY" : "DEFEAT", canvas.width/2, canvas.height/2 - 20);
+            ctx.font = '20px sans-serif';
+            ctx.fillText("Click to play again", canvas.width/2, canvas.height/2 + 40);
+
+            if (!matchEndSoundPlayed) {
+                const winningTeam = teamScore[0] >= 2 ? 0 : 1;
+                if (winningTeam === player.team) {
+                    playArpeggio([440, 554, 659, 880], 0.12, 'triangle', 0.15);
+                } else {
+                    playArpeggio([440, 370, 294, 220], 0.15, 'sawtooth', 0.13);
+                }
+                matchEndSoundPlayed = true;
+                pendingEvents.push({ tag: 'match_end', winningTeam });
+            }
+        }
+
+        // --- Draw Floating Text ---
+        for (let i = floatingTexts.length - 1; i >= 0; i--) {
+            let ft = floatingTexts[i];
+            ft.y -= 40 * dt; 
+            ft.life -= dt;
+            ft.age += dt;
+            
+            if (ft.life <= 0) {
+                floatingTexts.splice(i, 1);
+            } else {
+                const popT = Math.min(ft.age / 0.15, 1);
+                const popScale = easeOutBack(popT);
+                ctx.globalAlpha = ft.life / ft.maxLife;
+                ctx.fillStyle = ft.color;
+                ctx.font = `bold ${16 * ft.scale * popScale}px sans-serif`;
+                ctx.textAlign = 'center';
+                ctx.fillText(ft.text, ft.x, ft.y);
+                ctx.globalAlpha = 1.0;
+            }
+        }
+
+        drawScoreboard();
+        drawCooldowns(now);
+        
+        ctx.restore(); 
+
+        if (isOnline && isHost && connectionLost) {
+            drawConnectionLostOverlay();
+        } else {
+            drawOverlayEffects(now, dt);
+        }
+
+        if (isOnline && isHost && hostConns.length > 0 && !connectionLost) {
+            sendHostSnapshot(now);
+        }
+        updateHostDebugHud();
+        pendingEvents = [];
+    }
+
+    function drawOverlayEffects(now, dt, viewerChamp = player) {
+        // Subtle always-on vignette for atmosphere
+        const vignette = ctx.createRadialGradient(
+            canvas.width / 2, canvas.height / 2, canvas.height * 0.35,
+            canvas.width / 2, canvas.height / 2, canvas.height * 0.75
+        );
+        vignette.addColorStop(0, 'rgba(0,0,0,0)');
+        vignette.addColorStop(1, 'rgba(0,0,0,0.35)');
+        ctx.fillStyle = vignette;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        // Pulsing red edge when the local viewer's champion is low on HP
+        if (viewerChamp && viewerChamp.hp > 0 && viewerChamp.hp < 30) {
+            const pulse = 0.25 + 0.2 * Math.sin(now / 180);
+            const lowHpGrad = ctx.createRadialGradient(
+                canvas.width / 2, canvas.height / 2, canvas.height * 0.3,
+                canvas.width / 2, canvas.height / 2, canvas.height * 0.75
+            );
+            lowHpGrad.addColorStop(0, 'rgba(231,76,60,0)');
+            lowHpGrad.addColorStop(1, `rgba(231,76,60,${pulse})`);
+            ctx.fillStyle = lowHpGrad;
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+        }
+
+        // Brief red flash when the local viewer's champion takes a hit. On
+        // the host/local sim this value is decayed once per tick in
+        // gameLoopInner (for every champion, not just the viewer); on a
+        // guest it arrives fresh from the host in each snapshot.
+        if (viewerChamp && viewerChamp.screenFlashAlpha > 0) {
+            ctx.fillStyle = `rgba(231, 76, 60, ${viewerChamp.screenFlashAlpha})`;
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+        }
+    }
+
+    // ============================================================
+    // ONLINE PLAY: snapshot serialization (host -> guest)
+    // ============================================================
+
+    function championSnapshot(c) {
+        return {
+            slot: c.slot, team: c.team,
+            x: c.x, y: c.y, hp: c.hp, maxHp: c.maxHp, color: c.color,
+            counterActiveUntil: c.counterActiveUntil, stunnedUntil: c.stunnedUntil,
+            flashUntil: c.flashUntil, castType: c.castType, castingUntil: c.castingUntil,
+            castTotalTime: c.castTotalTime, castAimX: c.castAimX, castAimY: c.castAimY,
+            lastShot: c.lastShot, lastCounter: c.lastCounter, lastBlink: c.lastBlink,
+            lastAoe: c.lastAoe, lastSnipe: c.lastSnipe, screenFlashAlpha: c.screenFlashAlpha
+        };
+    }
+
+    function applyChampionSnapshot(champ, data) {
+        Object.assign(champ, data);
+    }
+
+    // Broadcasts one message to every connected guest (1-3 of them).
+    function broadcastToGuests(msg) {
+        for (const hc of hostConns) {
+            if (hc.conn && hc.conn.open) {
+                try { hc.conn.send(msg); } catch (err) { console.error('broadcast failed (recovered):', err); }
+            }
+        }
+    }
+
+    function sendHostSnapshot(now) {
+        const payload = {
+            type: 'state',
+            now,
+            gameState, stateTimer, currentRound, teamScore,
+            screenShake, hitStopTimer,
+            champs: champs.map(championSnapshot),
+            projectiles: projectiles.map(p => ({ x: p.x, y: p.y, radius: p.radius, ownerTeam: p.owner.team })),
+            aoes: aoes.map(a => ({ x: a.x, y: a.y, radius: a.radius, spawnTime: a.spawnTime, triggerTime: a.triggerTime, ownerTeam: a.owner.team })),
+            snipeProjectiles: snipeProjectiles.map(p => ({ x: p.x, y: p.y, radius: p.radius, ownerTeam: p.owner.team })),
+            // Capped to the most recent N particles - a big AoE trigger or a
+            // snipe hit can spawn 20-24 at once, and without a cap this
+            // payload can spike large enough to overwhelm a shaky data
+            // channel right at the moment an ability fires.
+            particles: particles.slice(-60).map(p => ({ x: p.x, y: p.y, life: p.life, maxLife: p.maxLife, color: p.color })),
+            floatingTexts: floatingTexts.map(f => ({ x: f.x, y: f.y, text: f.text, color: f.color, life: f.life, maxLife: f.maxLife, scale: f.scale })),
+            events: pendingEvents
+        };
+        broadcastToGuests(payload);
+    }
+
+    // ============================================================
+    // ONLINE PLAY: guest-side rendering (draw-only, no physics)
+    // ============================================================
+
+    function drawProjectilesOnly(list) {
+        for (const p of list) {
+            const mine = p.ownerTeam === player.team;
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+            ctx.fillStyle = mine ? '#f1c40f' : '#e67e22';
+            ctx.fill();
+        }
+    }
+
+    function drawSnipeProjectilesOnly(list) {
+        for (const p of list) {
+            const mine = p.ownerTeam === player.team;
+            ctx.save();
+            ctx.shadowColor = mine ? '#f1c40f' : '#e74c3c';
+            ctx.shadowBlur = 14;
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+            ctx.fillStyle = '#fff';
+            ctx.fill();
+            ctx.restore();
+        }
+    }
+
+    function drawAoesOnly(list, now) {
+        for (const a of list) {
+            const mine = a.ownerTeam === player.team;
+            const progress = Math.min((now - a.spawnTime) / (a.triggerTime - a.spawnTime), 1);
+            ctx.beginPath();
+            ctx.arc(a.x, a.y, a.radius, 0, Math.PI * 2);
+            ctx.fillStyle = mine ? 'rgba(230, 126, 34, 0.1)' : 'rgba(231, 76, 60, 0.1)';
+            ctx.fill();
+
+            ctx.beginPath();
+            ctx.arc(a.x, a.y, a.radius * progress, 0, Math.PI * 2);
+            ctx.fillStyle = mine ? 'rgba(230, 126, 34, 0.4)' : 'rgba(231, 76, 60, 0.4)';
+            ctx.fill();
+
+            ctx.lineWidth = 2;
+            ctx.strokeStyle = mine ? '#e67e22' : '#e74c3c';
+            ctx.stroke();
+        }
+    }
+
+    function drawParticlesOnly(list) {
+        for (const p of list) {
+            const t = Math.max(0, p.life / p.maxLife);
+            ctx.globalAlpha = t;
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, 3 * t, 0, Math.PI * 2);
+            ctx.fillStyle = p.color;
+            ctx.fill();
+            ctx.globalAlpha = 1.0;
+        }
+    }
+
+    function drawFloatingTextsOnly(list) {
+        ctx.textAlign = 'center';
+        for (const ft of list) {
+            const t = Math.max(0, ft.life / ft.maxLife);
+            ctx.globalAlpha = t;
+            ctx.fillStyle = ft.color;
+            ctx.font = `bold ${16 * ft.scale}px sans-serif`;
+            ctx.fillText(ft.text, ft.x, ft.y);
+            ctx.globalAlpha = 1.0;
+        }
+    }
+
+    function drawGuestArenaBackground() {
+        drawGrid();
+        ctx.shadowColor = 'rgba(0,0,0,0.6)';
+        ctx.shadowBlur = 15;
+        ctx.shadowOffsetY = 8;
+        ctx.strokeStyle = '#0f172a';
+        ctx.lineWidth = 4;
+
+        for (let pillar of pillars) {
+            const grad = ctx.createRadialGradient(
+                pillar.x - pillar.radius * 0.35, pillar.y - pillar.radius * 0.35, pillar.radius * 0.1,
+                pillar.x, pillar.y, pillar.radius
+            );
+            grad.addColorStop(0, '#475569');
+            grad.addColorStop(1, '#1e293b');
+            ctx.fillStyle = grad;
+            ctx.beginPath();
+            ctx.arc(pillar.x, pillar.y, pillar.radius, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+        }
+        ctx.shadowColor = 'transparent';
+    }
+
+    function drawGuestStateOverlay(snap, now) {
+        ctx.textAlign = 'center';
+        if (snap.gameState === 'start') {
+            ctx.fillStyle = 'rgba(0,0,0,0.5)';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.fillStyle = '#fff';
+            const timeLeft = snap.stateTimer - now;
+            if (timeLeft > 1000) {
+                ctx.font = 'bold 48px sans-serif';
+                ctx.fillText(`ROUND ${snap.currentRound}`, canvas.width / 2, canvas.height / 2);
+            } else if (timeLeft > 0) {
+                ctx.font = 'bold 64px sans-serif';
+                ctx.fillStyle = '#e74c3c';
+                ctx.fillText("FIGHT!", canvas.width / 2, canvas.height / 2);
+            }
+        } else if (snap.gameState === 'roundEnd') {
+            ctx.fillStyle = 'rgba(0,0,0,0.5)';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.fillStyle = '#fff';
+            ctx.font = 'bold 48px sans-serif';
+            const guestWon = snap.champs.some(c => c.team === player.team && c.hp > 0);
+            ctx.fillText(guestWon ? "YOUR TEAM WINS THE ROUND" : "OPPONENTS WIN THE ROUND", canvas.width / 2, canvas.height / 2);
+        } else if (snap.gameState === 'matchEnd') {
+            ctx.fillStyle = 'rgba(0,0,0,0.8)';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.fillStyle = '#fff';
+            ctx.font = 'bold 64px sans-serif';
+            ctx.fillText(snap.teamScore[player.team] >= 2 ? "VICTORY" : "DEFEAT", canvas.width / 2, canvas.height / 2 - 20);
+            ctx.font = '20px sans-serif';
+            ctx.fillText("Click to request rematch", canvas.width / 2, canvas.height / 2 + 40);
+        }
+    }
+
+    function handleRemoteEvents(events) {
+        if (!events) return;
+        for (const ev of events) {
+            const champ = (typeof ev.who === 'number') ? activeChamps.find(c => c.slot === ev.who) : null;
+            switch (ev.tag) {
+                case 'shoot': playTone({ freq: 620, freqEnd: 480, duration: 0.07, type: 'square', volume: 0.07 }); break;
+                case 'counter': playTone({ freq: 500, freqEnd: 900, duration: 0.15, type: 'triangle', volume: 0.12 }); break;
+                case 'block': playTone({ freq: 1000, freqEnd: 1500, duration: 0.12, type: 'triangle', volume: 0.16 }); break;
+                case 'blink_start': playTone({ freq: 300, freqEnd: 550, duration: 0.15, type: 'sine', volume: 0.08 }); break;
+                case 'blink_fire': playTone({ freq: 900, freqEnd: 200, duration: 0.12, type: 'sine', volume: 0.14 }); break;
+                case 'aoe_cast': playTone({ freq: 160, freqEnd: 90, duration: 0.3, type: 'sawtooth', volume: 0.08 }); break;
+                case 'aoe_trigger':
+                    playNoiseBurst({ duration: 0.22, volume: 0.22, filterFreq: 550 });
+                    playTone({ freq: 110, freqEnd: 60, duration: 0.25, type: 'sine', volume: 0.14 });
+                    break;
+                case 'snipe_charge_start': if (champ) champ.startSnipeChargeSound(CAST_SNIPE / 1000); break;
+                case 'snipe_charge_stop': if (champ) champ.stopSnipeChargeSound(); break;
+                case 'snipe_fire':
+                    playNoiseBurst({ duration: 0.09, volume: 0.25, filterFreq: 3200 });
+                    playTone({ freq: 1300, freqEnd: 500, duration: 0.06, type: 'square', volume: 0.14 });
+                    break;
+                case 'hit_big':
+                    playNoiseBurst({ duration: 0.18, volume: 0.28, filterFreq: 450 });
+                    playTone({ freq: 90, duration: 0.2, type: 'sine', volume: 0.18 });
+                    break;
+                case 'hit_small': playTone({ freq: 200, freqEnd: 120, duration: 0.07, type: 'square', volume: 0.07 }); break;
+                case 'fight': playTone({ freq: 220, freqEnd: 440, duration: 0.3, type: 'square', volume: 0.15 }); break;
+                case 'match_end': {
+                    const iWon = ev.winningTeam === player.team;
+                    if (iWon) playArpeggio([440, 554, 659, 880], 0.12, 'triangle', 0.15);
+                    else playArpeggio([440, 370, 294, 220], 0.15, 'sawtooth', 0.13);
+                    break;
+                }
+            }
+        }
+    }
+
+    let guestLastTime = performance.now();
+    let guestGameStartedAt = 0;
+
+    function guestGameLoop(now) {
+        if (runningMode !== 'guest') return;
+        try {
+            guestGameLoopInner(now);
+        } catch (err) {
+            console.error('guestGameLoop error (recovered):', err);
+            try { ctx.restore(); } catch (e) {}
+            ctx.setTransform(1, 0, 0, 1, 0, 0);
+        }
+        requestAnimationFrame(guestGameLoop);
+    }
+
+    function guestGameLoopInner(now) {
+        const dt = Math.min((now - guestLastTime) / 1000, 0.1);
+        guestLastTime = now;
+
+        // Watchdog: if we've never gotten a snapshot within a few seconds of
+        // starting, or the flow of snapshots has stopped, the data channel
+        // likely never truly connected (common on restrictive networks) or died.
+        if (!connectionLost) {
+            if (!latestSnapshot && now - guestGameStartedAt > 6000) {
+                connectionLost = true;
+                connectionLostReason = "Couldn't establish a connection to your friend (their network may be blocking direct connections).";
+            } else if (latestSnapshot && now - lastSnapshotAt > 5000) {
+                connectionLost = true;
+                connectionLostReason = 'Connection to your friend was lost.';
+            }
+        }
+
+        ctx.save();
+        const snap = latestSnapshot;
+        if (snap && snap.screenShake > 0) {
+            const shakeX = (Math.random() - 0.5) * snap.screenShake;
+            const shakeY = (Math.random() - 0.5) * snap.screenShake;
+            ctx.translate(shakeX, shakeY);
+        }
+
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        drawGuestArenaBackground();
+
+        if (snap && !connectionLost) {
+            snap.champs.forEach(sc => {
+                const c = guestChamps.find(gc => gc.slot === sc.slot);
+                if (c) applyChampionSnapshot(c, sc);
+            });
+            activeChamps = guestChamps;
+            player = guestChamps.find(c => c.slot === mySlot) || player;
+
+            // The host and guest each have their own performance.now() clock,
+            // zeroed at whatever moment their tab happened to load - there's no
+            // reason those two clocks line up. snap.now is the host's clock
+            // reading at the moment this snapshot was sent, and lastSnapshotAt
+            // is OUR clock reading at the moment we received it, so this gives
+            // us the host's clock value "right now" to compare against all the
+            // host-authored absolute timestamps in the snapshot (flashUntil,
+            // castingUntil, stunnedUntil, stateTimer, aoe triggerTime, etc).
+            // Using our own `now` for those directly was the bug causing a
+            // champion to look permanently stuck (e.g. flashed white) whenever
+            // the two clocks were far enough apart.
+            const hostNow = snap.now + (now - lastSnapshotAt);
+
+            drawAoesOnly(snap.aoes, hostNow);
+            drawSnipeProjectilesOnly(snap.snipeProjectiles);
+            drawProjectilesOnly(snap.projectiles);
+            drawParticlesOnly(snap.particles);
+
+            guestChamps.forEach(c => c.draw(ctx, hostNow));
+
+            drawFloatingTextsOnly(snap.floatingTexts);
+
+            teamScore = snap.teamScore;
+            currentRound = snap.currentRound;
+            gameState = snap.gameState;
+
+            drawGuestStateOverlay(snap, hostNow);
+            drawScoreboard();
+            drawCooldowns(hostNow, player, snap.gameState);
+        }
+
+        ctx.restore();
+
+        if (connectionLost) {
+            drawConnectionLostOverlay();
+        } else {
+            drawOverlayEffects(now, dt, player);
+        }
+
+        if (conn && conn.open && !connectionLost) {
+            try {
+                conn.send({
+                    type: 'input',
+                    keys: {
+                        KeyW: !!keys['KeyW'], KeyA: !!keys['KeyA'], KeyS: !!keys['KeyS'], KeyD: !!keys['KeyD'],
+                        Space: !!keys['Space'], KeyE: !!keys['KeyE'], KeyF: !!keys['KeyF']
+                    },
+                    mouse: { x: mouse.x, y: mouse.y, leftDown: mouse.leftDown, rightDown: mouse.rightDown }
+                });
+                guestInputsSent++;
+            } catch (err) {
+                console.error('input send failed (recovered):', err);
+            }
+        }
+        updateGuestDebugHud();
+    }
+
+    // ============================================================
+    // ONLINE PLAY: lobby / menu wiring
+    // ============================================================
+
+    // Network config for the underlying WebRTC connection. Google's public
+    // STUN server (below) is enough for most home networks. Some restrictive
+    // networks (school/office wifi, some mobile carriers) need a TURN relay
+    // to connect at all - if you hit that, sign up for a free TURN server
+    // (e.g. metered.ca's free tier) and add its entries to this array.
+    const PEER_ICE_CONFIG = {
+        iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' },
+            // STUN alone fails silently (the connection just hangs, never
+            // errors) whenever a player is behind a router that needs a
+            // relay - this gets much more likely once 2-3 people are
+            // connecting at once. These TURN servers are a public/free
+            // relay fallback so those connections complete instead of
+            // hanging indefinitely.
+            { urls: 'stun:openrelay.metered.ca:80' },
+            { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
+            { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
+            { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' }
+        ]
+    };
+
+    function randomPeerId() {
+        return 'g' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-5);
+    }
+
+    // Creates a Peer with an ID we generate ourselves, instead of letting
+    // PeerJS ask its cloud server for a random one first. That "give me an
+    // ID" call is a separate HTTP request PeerJS makes before it does
+    // anything else, and if that specific endpoint is flaky (a 404 there
+    // matches what you're seeing), 'open' just never fires and everything
+    // downstream looks like a silent freeze - skipping it removes that
+    // failure point entirely. Retries once on the rare chance our random ID
+    // collides with someone else's.
+    function createReliablePeer(onOpen, onError, attempt) {
+        attempt = attempt || 0;
+        const id = randomPeerId();
+        const p = new Peer(id, { config: PEER_ICE_CONFIG, debug: 1 });
+        p.on('open', pid => onOpen(p, pid));
+        p.on('error', err => {
+            console.error('Peer error:', err.type, err);
+            if (err.type === 'unavailable-id' && attempt < 3) {
+                try { p.destroy(); } catch (e) {}
+                createReliablePeer(onOpen, onError, attempt + 1);
+            } else {
+                onError(err, p);
+            }
+        });
+        return p;
+    }
+
+    // PeerJS occasionally has already opened a DataConnection by the time
+    // its 'connection'/'connect' event reaches our code (a known timing
+    // quirk, worse the more connections are in flight at once). If we only
+    // ever wait for the 'open' event, that connection sits there fully
+    // working but silently never fires our callback - which looks exactly
+    // like a freeze. This checks the already-open case first.
+    function onceOpen(dataConn, cb) {
+        if (dataConn.open) { cb(); return; }
+        dataConn.on('open', cb);
+    }
+
+    // PeerJS's DataConnection.open flag reflects whether the data channel
+    // logically opened - it does NOT reliably flip back to false if the
+    // underlying ICE/network path dies later without a clean close. The
+    // raw RTCPeerConnection underneath (conn.peerConnection) has its own
+    // iceConnectionState/connectionState which is the ground truth for
+    // "is this actually still connected". Surfacing it directly so we can
+    // tell an ICE failure apart from a stalled-but-technically-open channel.
+    function iceStateOf(dataConn) {
+        const pc = dataConn && dataConn.peerConnection;
+        if (!pc) return 'no peerConnection yet';
+        return `ice=${pc.iceConnectionState} conn=${pc.connectionState}`;
+    }
+
+    function watchIceState(dataConn, label) {
+        const attach = () => {
+            const pc = dataConn.peerConnection;
+            if (!pc) { setTimeout(attach, 300); return; }
+            pc.addEventListener('iceconnectionstatechange', () => {
+                console.log(`[${label}] iceConnectionState -> ${pc.iceConnectionState}`);
+            });
+            pc.addEventListener('connectionstatechange', () => {
+                console.log(`[${label}] connectionState -> ${pc.connectionState}`);
+            });
+        };
+        attach();
+    }
+
+    const menuOverlay = document.getElementById('menuOverlay');
+    const netDebug = document.getElementById('netDebug');
+
+    // Small always-on diagnostic readout (bottom-left corner) so connection
+    // problems are visible without opening DevTools. Shows what the game
+    // itself can see: connection state, timing, and (on the host) whether
+    // each guest's input is actually arriving.
+    function updateHostDebugHud() {
+        if (!isHost || !peer) { netDebug.style.display = 'none'; return; }
+        netDebug.style.display = 'block';
+        const now = performance.now();
+        let lines = [`HOST | you=slot0${player ? ' team' + player.team : ''} | phase: ${isOnline ? 'in match' : 'lobby'} | guests connected: ${hostConns.length}`];
+        for (const hc of hostConns) {
+            const lastIn = lastInputAtBySlot[hc.slot];
+            const age = lastIn ? Math.round(now - lastIn) + 'ms ago' : 'never received';
+            const open = hc.conn && hc.conn.open ? 'open' : 'NOT OPEN';
+            lines.push(`  slot ${hc.slot}: conn ${open}, last input: ${age}`);
+            lines.push(`    ${iceStateOf(hc.conn)}`);
+        }
+        if (hostConns.length === 0) lines.push('  (waiting for someone to connect...)');
+        netDebug.textContent = lines.join('\n');
+    }
+
+    function updateGuestDebugHud() {
+        if (isHost || !conn) { netDebug.style.display = 'none'; return; }
+        netDebug.style.display = 'block';
+        const now = performance.now();
+        const open = conn.open ? 'open' : 'NOT OPEN';
+        const snapAge = latestSnapshot ? Math.round(now - lastSnapshotAt) + 'ms ago' : 'none received yet';
+        netDebug.textContent = `GUEST | you=slot${mySlot}${player ? ' team' + player.team : ''} | phase: ${isOnline ? 'in match' : 'lobby'}\n` +
+            `  conn to host: ${open}\n` +
+            `  ${iceStateOf(conn)}\n` +
+            `  last snapshot: ${snapAge}\n` +
+            `  inputs sent: ${guestInputsSent}`;
+    }
+
+    // Refresh the HUD on an interval too, since it should be visible while
+    // sitting in the lobby (before any game loop is running).
+    setInterval(() => {
+        if (isHost) updateHostDebugHud();
+        else if (conn) updateGuestDebugHud();
+        else netDebug.style.display = 'none';
+    }, 500);
+    const mainMenuPanel = document.getElementById('mainMenuPanel');
+    const hostPanel = document.getElementById('hostPanel');
+    const joinPanel = document.getElementById('joinPanel');
+    const lobbyPanel = document.getElementById('lobbyPanel');
+    const lobbyRoomLinkBox = document.getElementById('lobbyRoomLinkBox');
+    const roomCodeDisplay2 = document.getElementById('roomCodeDisplay2');
+    const lobbyPlayerList = document.getElementById('lobbyPlayerList');
+    const btnJoinTeamBlue = document.getElementById('btnJoinTeamBlue');
+    const btnJoinTeamRed = document.getElementById('btnJoinTeamRed');
+    const btnStartMatch = document.getElementById('btnStartMatch');
+    const lobbyStatus = document.getElementById('lobbyStatus');
+    const menuStatus = document.getElementById('menuStatus');
+    const roomCodeDisplay = document.getElementById('roomCodeDisplay');
+    const youIndicator = document.getElementById('youIndicator');
+    const youIndicatorText = document.getElementById('youIndicatorText');
+
+    function showPanel(panel) {
+        [mainMenuPanel, hostPanel, joinPanel, lobbyPanel].forEach(p => p.classList.add('hidden'));
+        panel.classList.remove('hidden');
+        menuStatus.textContent = '';
+    }
+
+    function setYouIndicator(team) {
+        if (team === null || team === undefined) { youIndicator.classList.add('hidden'); return; }
+        youIndicator.classList.remove('hidden');
+        youIndicator.querySelector('.dot').style.background = team === 0 ? '#3498db' : '#e74c3c';
+        youIndicatorText.textContent = 'YOU';
+    }
+
+    // ------------------------------------------------------------
+    // Builds Champion objects from a lobby player list, positioning
+    // teams on opposite sides of the arena. Works for a 2-player (1v1)
+    // or 4-player (2v2) list; used identically on host and guest.
+    // ------------------------------------------------------------
+    function buildChampsFromLobby(players) {
+        const sorted = [...players].sort((a, b) => a.slot - b.slot);
+        const isDuo = sorted.length === 4;
+        const positions1v1 = { 0: { x: 100, y: canvas.height / 2 }, 1: { x: canvas.width - 100, y: canvas.height / 2 } };
+        const positions2v2 = {
+            0: [{ x: 100, y: 200 }, { x: 100, y: 400 }],
+            1: [{ x: canvas.width - 100, y: 200 }, { x: canvas.width - 100, y: 400 }]
+        };
+        const teamCounts = { 0: 0, 1: 0 };
+        const result = [];
+        sorted.forEach(p => {
+            const idx = teamCounts[p.team]++;
+            const pos = isDuo ? positions2v2[p.team][idx] : positions1v1[p.team];
+            const color = (TEAM_COLORS[p.team] && TEAM_COLORS[p.team][idx]) || TEAM_COLORS[p.team][0];
+            const c = new Champion(pos.x, pos.y, false, color);
+            c.slot = p.slot;
+            c.team = p.team;
+            c.inputMode = (p.slot === 0) ? 'local' : 'remote';
+            result.push(c);
+        });
+        return result;
+    }
+
+    function startLocalGame() {
+        menuOverlay.classList.add('hidden');
+        setYouIndicator(null);
+        isOnline = false; isHost = false;
+        connectionLost = false;
+        runningMode = 'sim';
+        player = new Champion(100, canvas.height / 2, false, '#3498db');
+        player.slot = 0; player.team = 0; player.inputMode = 'local';
+        enemy = new Champion(canvas.width - 100, canvas.height / 2, true, '#e74c3c');
+        enemy.slot = 1; enemy.team = 1; enemy.isAI = true;
+        activeChamps = [player, enemy];
+        initMatchGeneric();
+        requestAnimationFrame(gameLoop);
+    }
+
+    function startOnlineHostMatch() {
+        broadcastToGuests({ type: 'start', players: lobbyPlayers });
+        menuOverlay.classList.add('hidden');
+        isOnline = true; isHost = true;
+        connectionLost = false;
+        runningMode = 'sim';
+        remoteInputsBySlot = {};
+        champs = buildChampsFromLobby(lobbyPlayers);
+        activeChamps = champs;
+        player = champs.find(c => c.slot === 0);
+        setYouIndicator(player.team);
+        initMatchGeneric();
+        requestAnimationFrame(gameLoop);
+    }
+
+    function startGuestGame(players) {
+        menuOverlay.classList.add('hidden');
+        isOnline = true; isHost = false;
+        connectionLost = false;
+        runningMode = 'guest';
+        latestSnapshot = null;
+        guestGameStartedAt = performance.now();
+        lastSnapshotAt = performance.now();
+        guestChamps = buildChampsFromLobby(players);
+        activeChamps = guestChamps;
+        player = guestChamps.find(c => c.slot === mySlot) || guestChamps[0];
+        setYouIndicator(player.team);
+        requestAnimationFrame(guestGameLoop);
+    }
+
+    // ------------------------------------------------------------
+    // Lobby rendering + validation (1v1 needs 2 players split 1/1,
+    // 2v2 needs 4 players split 2/2; teams are picked by each player).
+    // ------------------------------------------------------------
+    function lobbyValidationMessage() {
+        const n = lobbyPlayers.length;
+        if (n < 2) return 'Waiting for at least one more player to join...';
+        if (n === 3) return 'Need a 4th player for 2v2 (or have one player leave for 1v1).';
+        if (lobbyPlayers.some(p => p.team === null || p.team === undefined)) return 'Waiting for everyone to pick a team...';
+        const t0 = lobbyPlayers.filter(p => p.team === 0).length;
+        const t1 = lobbyPlayers.filter(p => p.team === 1).length;
+        if (t0 !== t1) return 'Teams must be even - 1v1 or 2v2.';
+        return '';
+    }
+
+    function isLobbyValid() {
+        const n = lobbyPlayers.length;
+        return (n === 2 || n === 4) && lobbyValidationMessage() === '';
+    }
+
+    function renderLobby() {
+        if (isHost) {
+            lobbyRoomLinkBox.classList.remove('hidden');
+        } else {
+            lobbyRoomLinkBox.classList.add('hidden');
+        }
+
+        lobbyPlayerList.innerHTML = '';
+        [...lobbyPlayers].sort((a, b) => a.slot - b.slot).forEach(p => {
+            const row = document.createElement('div');
+            row.className = 'lobbyRow';
+            const label = p.isHost ? 'Host' : `Player ${p.slot + 1}`;
+            const teamLabel = p.team === 0 ? 'Team Blue' : (p.team === 1 ? 'Team Red' : 'no team yet');
+            const youTag = p.slot === mySlot ? ' (You)' : '';
+            row.textContent = `${label}${youTag} — ${teamLabel}`;
+            row.style.color = p.team === 0 ? '#3498db' : (p.team === 1 ? '#e74c3c' : '#94a3b8');
+            lobbyPlayerList.appendChild(row);
+        });
+
+        const me = lobbyPlayers.find(p => p.slot === mySlot);
+        btnJoinTeamBlue.classList.toggle('teamBtnSelected', !!me && me.team === 0);
+        btnJoinTeamRed.classList.toggle('teamBtnSelected', !!me && me.team === 1);
+
+        if (isHost) {
+            btnStartMatch.classList.remove('hidden');
+            const valid = isLobbyValid();
+            btnStartMatch.disabled = !valid;
+            lobbyStatus.textContent = valid
+                ? `Ready for ${lobbyPlayers.length === 2 ? '1v1' : '2v2'} — click Start Match.`
+                : lobbyValidationMessage();
+        } else {
+            btnStartMatch.classList.add('hidden');
+            lobbyStatus.textContent = 'Waiting for the host to start the match...';
+        }
+    }
+
+    function broadcastLobby() {
+        broadcastToGuests({ type: 'lobby', players: lobbyPlayers });
+    }
+
+    function chooseTeam(team) {
+        if (isHost) {
+            const me = lobbyPlayers.find(p => p.slot === 0);
+            if (me) me.team = team;
+            broadcastLobby();
+            renderLobby();
+        } else if (conn && conn.open) {
+            try { conn.send({ type: 'setTeam', team }); } catch (e) {}
+        }
+    }
+
+    function drawConnectionLostOverlay() {
+        ctx.fillStyle = 'rgba(0,0,0,0.85)';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = '#fff';
+        ctx.textAlign = 'center';
+        ctx.font = 'bold 32px sans-serif';
+        ctx.fillText('Connection Lost', canvas.width / 2, canvas.height / 2 - 30);
+        ctx.font = '16px sans-serif';
+        ctx.fillStyle = '#94a3b8';
+        wrapText(connectionLostReason, canvas.width / 2, canvas.height / 2 + 6, 560, 22);
+        ctx.fillStyle = '#fff';
+        ctx.font = '16px sans-serif';
+        ctx.fillText('Click to return to the menu', canvas.width / 2, canvas.height / 2 + 60);
+    }
+
+    function wrapText(text, x, y, maxWidth, lineHeight) {
+        const words = text.split(' ');
+        let line = '';
+        let lines = [];
+        for (const word of words) {
+            const test = line ? line + ' ' + word : word;
+            if (ctx.measureText(test).width > maxWidth && line) {
+                lines.push(line);
+                line = word;
+            } else {
+                line = test;
+            }
+        }
+        if (line) lines.push(line);
+        lines.forEach((l, i) => ctx.fillText(l, x, y + i * lineHeight));
+    }
+
+    function returnToMenu() {
+        if (peer) { try { peer.destroy(); } catch (e) {} peer = null; }
+        conn = null;
+        hostConns = [];
+        nextSlot = 1;
+        mySlot = 0;
+        lobbyPlayers = [];
+        remoteInputsBySlot = {};
+        champs = [];
+        guestChamps = [];
+        isOnline = false; isHost = false;
+        connectionLost = false;
+        runningMode = null;
+        latestSnapshot = null;
+        setYouIndicator(null);
+        showPanel(mainMenuPanel);
+        menuOverlay.classList.remove('hidden');
+    }
+
+    function buildInviteLink(id) {
+        return `${location.origin}${location.pathname}?room=${id}`;
+    }
+
+    function checkUrlForRoomCode() {
+        const params = new URLSearchParams(location.search);
+        const room = params.get('room');
+        if (room) {
+            showPanel(joinPanel);
+            document.getElementById('joinCodeInput').value = room;
+            menuStatus.textContent = "Your friend invited you — click Connect to join.";
+        }
+    }
+
+    document.getElementById('btnLocal').addEventListener('click', startLocalGame);
+
+    document.getElementById('btnHost').addEventListener('click', () => {
+        isHost = true;
+        mySlot = 0;
+        nextSlot = 1;
+        hostConns = [];
+        lobbyPlayers = [{ slot: 0, team: null, isHost: true }];
+        showPanel(lobbyPanel);
+        lobbyStatus.textContent = 'Creating room...';
+        peer = createReliablePeer(
+            (p, id) => {
+                roomCodeDisplay2.textContent = buildInviteLink(id);
+                renderLobby();
+            },
+            err => {
+                lobbyStatus.textContent = 'Connection error: ' + err.type + '. Try refreshing and hosting again.';
+            }
+        );
+        peer.on('connection', c => {
+            // Room supports up to 3 guests (host + 3 = 4 total, for 2v2)
+            if (hostConns.length >= 3) {
+                try { c.send({ type: 'full' }); } catch (e) {}
+                setTimeout(() => { try { c.close(); } catch (e) {} }, 200);
+                return;
+            }
+            const slot = nextSlot++;
+            hostConns.push({ conn: c, slot });
+            lobbyPlayers.push({ slot, team: null, isHost: false });
+            watchIceState(c, `host<-slot${slot}`);
+
+            let welcomed = false;
+            const welcomeTimeout = setTimeout(() => {
+                if (!welcomed) {
+                    console.warn('Guest connection in slot', slot, 'never finished opening.');
+                }
+            }, 8000);
+
+            onceOpen(c, () => {
+                welcomed = true;
+                clearTimeout(welcomeTimeout);
+                const sendWelcome = () => { try { c.send({ type: 'welcome', yourSlot: slot }); } catch (e) {} };
+                sendWelcome();
+                // A send right as a channel finishes opening can silently
+                // no-op on some browsers even though .open already read
+                // true - resend once shortly after as a safety net.
+                setTimeout(sendWelcome, 700);
+                broadcastLobby();
+                renderLobby();
+            });
+            c.on('data', data => {
+                try {
+                    if (data.type === 'setTeam') {
+                        const p = lobbyPlayers.find(pl => pl.slot === slot);
+                        if (p) p.team = data.team;
+                        broadcastLobby();
+                        renderLobby();
+                    } else if (data.type === 'input') {
+                        remoteInputsBySlot[slot] = { keys: data.keys, mouse: data.mouse };
+                        lastInputAtBySlot[slot] = performance.now();
+                    } else if (data.type === 'restart') {
+                        if (gameState === 'matchEnd') initMatchGeneric();
+                    }
+                } catch (err) {
+                    console.error('host data handler error (recovered):', err);
+                }
+            });
+            c.on('close', () => {
+                hostConns = hostConns.filter(hc => hc.slot !== slot);
+                lobbyPlayers = lobbyPlayers.filter(p => p.slot !== slot);
+                delete remoteInputsBySlot[slot];
+                if (runningMode === 'sim' && isOnline) {
+                    connectionLost = true;
+                    connectionLostReason = 'A player disconnected.';
+                } else {
+                    broadcastLobby();
+                    renderLobby();
+                }
+            });
+            c.on('error', () => {
+                if (runningMode === 'sim' && isOnline) {
+                    connectionLost = true;
+                    connectionLostReason = 'Connection to a player was lost.';
+                }
+            });
+        });
+    });
+
+    document.getElementById('btnCopyCode2').addEventListener('click', () => {
+        navigator.clipboard.writeText(roomCodeDisplay2.textContent).then(() => {
+            menuStatus.textContent = 'Code copied!';
+        }).catch(() => {});
+    });
+
+    document.getElementById('btnJoin').addEventListener('click', () => {
+        showPanel(joinPanel);
+    });
+
+    document.getElementById('btnCancelJoin').addEventListener('click', () => {
+        if (peer) { peer.destroy(); peer = null; }
+        conn = null;
+        showPanel(mainMenuPanel);
+    });
+
+    document.getElementById('btnLeaveLobby').addEventListener('click', () => {
+        returnToMenu();
+    });
+
+    btnJoinTeamBlue.addEventListener('click', () => chooseTeam(0));
+    btnJoinTeamRed.addEventListener('click', () => chooseTeam(1));
+
+    btnStartMatch.addEventListener('click', () => {
+        if (!isHost || !isLobbyValid()) return;
+        startOnlineHostMatch();
+    });
+
+    document.getElementById('btnConnect').addEventListener('click', () => {
+        let code = document.getElementById('joinCodeInput').value.trim();
+        try {
+            const maybeUrl = new URL(code);
+            const roomParam = maybeUrl.searchParams.get('room');
+            if (roomParam) code = roomParam;
+        } catch (e) { /* not a URL, treat as a raw code */ }
+        if (!code) { menuStatus.textContent = 'Enter a room code first.'; return; }
+        menuStatus.textContent = 'Connecting...';
+        isHost = false;
+
+        const connectTimeout = setTimeout(() => {
+            if (menuStatus.textContent === 'Connecting...' || menuStatus.textContent.startsWith('Connected!')) {
+                menuStatus.textContent = "Couldn't reach that room - check the code/link and that the host is still on the lobby screen, then try again.";
+            }
+        }, 12000);
+
+        peer = createReliablePeer(
+            () => {
+                conn = peer.connect(code, { reliable: true });
+                watchIceState(conn, 'guest->host');
+                onceOpen(conn, () => {
+                    menuStatus.textContent = 'Connected! Joining lobby...';
+                });
+                conn.on('data', data => {
+                    try {
+                        if (data.type === 'welcome') {
+                            clearTimeout(connectTimeout);
+                            mySlot = data.yourSlot;
+                            showPanel(lobbyPanel);
+                            renderLobby();
+                        } else if (data.type === 'lobby') {
+                            lobbyPlayers = data.players;
+                            renderLobby();
+                        } else if (data.type === 'start') {
+                            lobbyPlayers = data.players;
+                            startGuestGame(lobbyPlayers);
+                        } else if (data.type === 'full') {
+                            clearTimeout(connectTimeout);
+                            menuStatus.textContent = 'That room is full (max 4 players).';
+                        } else if (data.type === 'state') {
+                            latestSnapshot = data;
+                            lastSnapshotAt = performance.now();
+                            handleRemoteEvents(data.events);
+                        }
+                    } catch (err) {
+                        console.error('guest data handler error (recovered):', err);
+                    }
+                });
+                conn.on('close', () => {
+                    clearTimeout(connectTimeout);
+                    if (runningMode === 'guest') {
+                        connectionLost = true;
+                        connectionLostReason = 'Connection to the host was lost.';
+                    } else {
+                        menuStatus.textContent = 'Disconnected from the room.';
+                    }
+                });
+                conn.on('error', () => {
+                    clearTimeout(connectTimeout);
+                    if (runningMode === 'guest') {
+                        connectionLost = true;
+                        connectionLostReason = 'Connection to the host was lost.';
+                    } else {
+                        menuStatus.textContent = 'Could not reach that room.';
+                    }
+                });
+            },
+            err => {
+                clearTimeout(connectTimeout);
+                menuStatus.textContent = 'Connection error: ' + err.type;
+            }
+        );
+    });
+
+    document.getElementById('joinCodeInput').addEventListener('keydown', e => {
+        if (e.key === 'Enter') document.getElementById('btnConnect').click();
+    });
+
+    // Prime a default player/enemy pair so nothing else references undefined
+    // champions before the person picks a mode from the menu (the menu
+    // overlay covers the canvas until then, so nothing is drawn yet).
+    player = new Champion(100, canvas.height / 2, false, '#3498db');
+    player.slot = 0; player.team = 0; player.inputMode = 'local';
+    enemy = new Champion(canvas.width - 100, canvas.height / 2, true, '#e74c3c');
+    enemy.slot = 1; enemy.team = 1; enemy.isAI = true;
+    activeChamps = [player, enemy];
+    checkUrlForRoomCode();
+</script>
+</body>
+</html>
