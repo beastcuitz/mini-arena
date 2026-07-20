@@ -68,6 +68,17 @@
         }
         #youIndicator .dot { width: 10px; height: 10px; border-radius: 50%; }
         .hidden { display: none !important; }
+
+        #lobbyPlayerList {
+            max-width: 320px; min-width: 260px; text-align: left; background: #0f172a;
+            border: 1px solid #334155; border-radius: 6px; padding: 8px 12px;
+        }
+        .lobbyRow { padding: 4px 0; font-size: 14px; }
+        #lobbyTeamButtons { display: flex; gap: 10px; }
+        #lobbyTeamButtons .bigBtn { min-width: 140px; }
+        .teamBtnSelected { box-shadow: 0 0 0 3px #f8fafc inset; }
+        #btnStartMatch:disabled { opacity: 0.4; cursor: not-allowed; }
+        #btnStartMatch:disabled:hover { background: #2563eb; }
     </style>
     <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
 </head>
@@ -106,12 +117,32 @@
                 <button class="bigBtn" id="btnCancelJoin">Cancel</button>
             </div>
 
+            <div class="menuPanel hidden" id="lobbyPanel">
+                <div class="menuPanel hidden" id="lobbyRoomLinkBox">
+                    <p style="margin:0;color:#94a3b8;">Send this link to up to 3 friends:</p>
+                    <div id="roomCodeBox2" style="display:flex;align-items:center;gap:8px;max-width:380px;">
+                        <span id="roomCodeDisplay2" style="font-family: monospace; font-size: 12px; letter-spacing: 0.2px; background: #0f172a; border: 1px solid #334155; padding: 8px 12px; border-radius: 6px; color: #f8fafc; word-break: break-all; max-width: 260px; text-align: left;">...</span>
+                        <button class="smallBtn" id="btnCopyCode2">Copy Link</button>
+                    </div>
+                </div>
+                <div id="lobbyPlayerList"></div>
+                <p style="margin:0;color:#94a3b8;font-size:13px;">Pick your team (no friendly fire between teammates):</p>
+                <div id="lobbyTeamButtons">
+                    <button class="bigBtn" id="btnJoinTeamBlue" style="border-color:#3498db;">Join Team Blue</button>
+                    <button class="bigBtn" id="btnJoinTeamRed" style="border-color:#e74c3c;">Join Team Red</button>
+                </div>
+                <button class="bigBtn primary hidden" id="btnStartMatch">Start Match</button>
+                <div id="lobbyStatus" style="color:#94a3b8;font-size:13px;min-height:16px;"></div>
+                <button class="bigBtn" id="btnLeaveLobby">Leave</button>
+            </div>
+
             <div id="menuStatus"></div>
         </div>
     </div>
 
     <div class="controls">
         <p><strong>WASD</strong>: Move | <strong>LMB</strong>: Shoot | <strong>RMB</strong>: Counter | <strong>Space</strong>: Blink | <strong>E</strong>: AoE Stun | <strong>F</strong>: Snipe (long cast, aim while casting)</p>
+        <p>Online play supports 1v1 or 2v2 (up to 4 players) &mdash; teammates never damage each other.</p>
     </div>
 
 <script>
@@ -150,16 +181,30 @@
     let isOnline = false;
     let isHost = false;
     let peer = null;
-    let conn = null;
+    let conn = null; // guest's single connection to the host
+    let hostConns = []; // host-side: [{ conn, slot }], one per connected friend (up to 3)
+    let nextSlot = 1; // host is always slot 0; guests get 1, 2, 3 in join order
+    let mySlot = 0; // which slot is "me" (0 for host, assigned by host for guests)
+    let lobbyPlayers = []; // [{ slot, team, isHost }] - authoritative on host, mirrored to guests
+    let remoteInputsBySlot = {}; // host-side: latest input from each connected guest, keyed by slot
     let latestSnapshot = null;
     let lastSnapshotAt = 0;
     let connectionLost = false;
     let connectionLostReason = '';
     let pendingEvents = [];
-    let enemyDamageFlashAlpha = 0; // mirrors damageFlashAlpha but for the remote-controlled champion (host-side bookkeeping for guest's screen flash)
-    const remoteInput = {
-        keys: {},
-        mouse: { x: 400, y: 300, leftDown: false, rightDown: false }
+
+    // The set of champions currently in the match - length 2 for local-vs-AI
+    // or a 1v1 online match, length 4 for a 2v2 online match. All game logic
+    // (movement, collisions, AI targeting, drawing) iterates over this array
+    // instead of hardcoding two named combatants, so the same code runs a
+    // 1v1 or a 2v2 without a separate code path.
+    let activeChamps = [];
+    let champs = []; // host-side authoritative champion list for online matches
+    let guestChamps = []; // guest-side local mirror of the champion list (render-only)
+
+    const TEAM_COLORS = {
+        0: ['#3498db', '#2980b9'], // Team Blue - two shades so teammates are distinguishable
+        1: ['#e74c3c', '#c0392b']  // Team Red
     };
 
     canvas.addEventListener('mousedown', e => {
@@ -177,7 +222,6 @@
     let aoes = [];
     let snipeProjectiles = [];
     let hitStopTimer = 0;      // ms of slow-motion remaining after a big hit
-    let damageFlashAlpha = 0;  // red screen flash when the player takes damage
     
     // Cooldown constants (ms)
     const CD_SHOOT = 800;
@@ -261,8 +305,7 @@
     }
 
     // Match variables
-    let playerScore = 0;
-    let enemyScore = 0;
+    let teamScore = { 0: 0, 1: 0 };
     let currentRound = 1;
     let gameState = 'start'; 
     let stateTimer = 0;
@@ -311,6 +354,14 @@
             this.aiMoveTimer = 0;
             this.aiTargetX = x;
             this.aiTargetY = y;
+
+            // Team/networking identity. team 0/1 controls friendly fire and
+            // color; slot 0 is always the host, 1-3 are guests in join order;
+            // inputMode says where this champion's control input comes from.
+            this.team = 0;
+            this.slot = 0;
+            this.inputMode = 'local'; // 'local' | 'remote' (isAI true overrides both)
+            this.screenFlashAlpha = 0; // red screen-edge flash when THIS champion takes damage
         }
 
         reset() {
@@ -326,7 +377,30 @@
             this.stunnedUntil = 0;
             this.castingUntil = 0;
             this.castType = null;
+            this.screenFlashAlpha = 0;
             this.stopSnipeChargeSound();
+        }
+
+        // Nearest living champion on the opposing team - used by AI for
+        // targeting, and by the AI's snipe-cast aim tracking.
+        nearestEnemy() {
+            let best = null, bestDist = Infinity;
+            for (const c of activeChamps) {
+                if (c === this || c.team === this.team || c.hp <= 0) continue;
+                const d = Math.hypot(c.x - this.x, c.y - this.y);
+                if (d < bestDist) { bestDist = d; best = c; }
+            }
+            return best;
+        }
+
+        // Where this champion's control input comes from this tick. Returns
+        // null for AI (caller falls back to AI logic), or { keys, mouse }.
+        getInputSource() {
+            if (this.isAI) return null;
+            if (this.inputMode === 'remote') {
+                return remoteInputsBySlot[this.slot] || { keys: {}, mouse: { x: this.x, y: this.y, leftDown: false, rightDown: false } };
+            }
+            return { keys, mouse };
         }
 
         update(dt, now) {
@@ -338,7 +412,7 @@
                     createFloatingText(this.x, this.y - 30, "INTERRUPTED", '#e74c3c');
                     if (this.castType === 'snipe') {
                         this.stopSnipeChargeSound();
-                        pendingEvents.push({ tag: 'snipe_charge_stop', who: this === player ? 'player' : 'enemy' });
+                        pendingEvents.push({ tag: 'snipe_charge_stop', who: this.slot });
                     }
                 }
                 this.castType = null;
@@ -359,34 +433,34 @@
             // 3. Currently casting - snipe allows a slow crawl so you're not a
             // guaranteed sitting duck for an AoE; other casts (blink) fully root.
             if (now < this.castingUntil) {
-                const humanControlled = (this === player) || (isOnline && isHost && this === enemy);
-                const srcKeys = (this === player) ? keys : remoteInput.keys;
-                const srcMouse = (this === player) ? mouse : remoteInput.mouse;
+                const src = this.getInputSource();
 
                 if (this.castType === 'snipe') {
                     // Keep tracking the aim point right up until it fires -
                     // that's the "slow flick": the whole cast window to adjust
                     // where it's going to land.
-                    if (humanControlled) {
-                        this.castAimX = srcMouse.x;
-                        this.castAimY = srcMouse.y;
+                    if (src) {
+                        this.castAimX = src.mouse.x;
+                        this.castAimY = src.mouse.y;
                     } else {
-                        this.castAimX = player.x;
-                        this.castAimY = player.y;
+                        const target = this.nearestEnemy();
+                        if (target) { this.castAimX = target.x; this.castAimY = target.y; }
                     }
 
                     let dx = 0, dy = 0;
-                    if (humanControlled) {
-                        if (srcKeys['KeyW']) dy -= 1;
-                        if (srcKeys['KeyS']) dy += 1;
-                        if (srcKeys['KeyA']) dx -= 1;
-                        if (srcKeys['KeyD']) dx += 1;
+                    if (src) {
+                        if (src.keys['KeyW']) dy -= 1;
+                        if (src.keys['KeyS']) dy += 1;
+                        if (src.keys['KeyA']) dx -= 1;
+                        if (src.keys['KeyD']) dx += 1;
                     } else {
                         // AI keeps drifting toward its juke target while casting
                         this.aiMoveTimer -= dt;
                         if (this.aiMoveTimer <= 0) {
-                            this.aiTargetX = player.x + (Math.random() * 400 - 200);
-                            this.aiTargetY = player.y + (Math.random() * 400 - 200);
+                            const target = this.nearestEnemy();
+                            const tx = target ? target.x : this.x, ty = target ? target.y : this.y;
+                            this.aiTargetX = tx + (Math.random() * 400 - 200);
+                            this.aiTargetY = ty + (Math.random() * 400 - 200);
                             this.aiMoveTimer = 0.4 + Math.random() * 0.8;
                         }
                         const distToTarget = Math.hypot(this.aiTargetX - this.x, this.aiTargetY - this.y);
@@ -408,39 +482,38 @@
             let dx = 0;
             let dy = 0;
 
-            const isHumanControlled = (this === player) || (isOnline && isHost && this === enemy);
+            const src = this.getInputSource();
 
-            if (isHumanControlled) {
-                const srcKeys = (this === player) ? keys : remoteInput.keys;
-                const srcMouse = (this === player) ? mouse : remoteInput.mouse;
+            if (src) {
+                if (src.keys['KeyW']) dy -= 1;
+                if (src.keys['KeyS']) dy += 1;
+                if (src.keys['KeyA']) dx -= 1;
+                if (src.keys['KeyD']) dx += 1;
 
-                if (srcKeys['KeyW']) dy -= 1;
-                if (srcKeys['KeyS']) dy += 1;
-                if (srcKeys['KeyA']) dx -= 1;
-                if (srcKeys['KeyD']) dx += 1;
-
-                if (srcMouse.leftDown && now - this.lastShot > CD_SHOOT) {
-                    this.shoot(srcMouse.x, srcMouse.y, now);
+                if (src.mouse.leftDown && now - this.lastShot > CD_SHOOT) {
+                    this.shoot(src.mouse.x, src.mouse.y, now);
                 }
-                if (srcMouse.rightDown && now - this.lastCounter > CD_COUNTER) {
+                if (src.mouse.rightDown && now - this.lastCounter > CD_COUNTER) {
                     this.activateCounter(now);
                 }
-                if (srcKeys['Space'] && now - this.lastBlink > CD_BLINK) {
-                    this.startBlink(srcMouse.x, srcMouse.y, now);
+                if (src.keys['Space'] && now - this.lastBlink > CD_BLINK) {
+                    this.startBlink(src.mouse.x, src.mouse.y, now);
                 }
-                if (srcKeys['KeyE'] && now - this.lastAoe > CD_AOE) {
-                    this.castAoe(srcMouse.x, srcMouse.y, now);
+                if (src.keys['KeyE'] && now - this.lastAoe > CD_AOE) {
+                    this.castAoe(src.mouse.x, src.mouse.y, now);
                 }
-                if (srcKeys['KeyF'] && now - this.lastSnipe > CD_SNIPE) {
-                    this.startSnipe(srcMouse.x, srcMouse.y, now);
+                if (src.keys['KeyF'] && now - this.lastSnipe > CD_SNIPE) {
+                    this.startSnipe(src.mouse.x, src.mouse.y, now);
                 }
 
             } else {
                 // AI Logic
+                const target = this.nearestEnemy();
                 this.aiMoveTimer -= dt;
                 if (this.aiMoveTimer <= 0) {
-                    this.aiTargetX = player.x + (Math.random() * 400 - 200);
-                    this.aiTargetY = player.y + (Math.random() * 400 - 200);
+                    const tx = target ? target.x : this.x, ty = target ? target.y : this.y;
+                    this.aiTargetX = tx + (Math.random() * 400 - 200);
+                    this.aiTargetY = ty + (Math.random() * 400 - 200);
                     this.aiMoveTimer = 0.5 + Math.random() * 1.5;
                 }
 
@@ -450,14 +523,16 @@
                     dy = (this.aiTargetY - this.y) / distToTarget;
                 }
 
-                if (now - this.lastShot > CD_SHOOT + 400 && Math.random() < 0.08) {
-                    this.shoot(player.x, player.y, now);
-                }
-                if (now - this.lastAoe > CD_AOE + 1000 && Math.random() < 0.02) {
-                    this.castAoe(player.x, player.y, now);
-                }
-                if (now - this.lastSnipe > CD_SNIPE + 1500 && Math.random() < 0.015) {
-                    this.startSnipe(player.x, player.y, now);
+                if (target) {
+                    if (now - this.lastShot > CD_SHOOT + 400 && Math.random() < 0.08) {
+                        this.shoot(target.x, target.y, now);
+                    }
+                    if (now - this.lastAoe > CD_AOE + 1000 && Math.random() < 0.02) {
+                        this.castAoe(target.x, target.y, now);
+                    }
+                    if (now - this.lastSnipe > CD_SNIPE + 1500 && Math.random() < 0.015) {
+                        this.startSnipe(target.x, target.y, now);
+                    }
                 }
             }
 
@@ -549,7 +624,7 @@
             aoes.push({
                 x: targetX,
                 y: targetY,
-                radius: 45,
+                radius: 58, // buffed from 45 (+~30%) - easier to land
                 spawnTime: now,
                 triggerTime: now + 1200, 
                 owner: this,
@@ -565,7 +640,7 @@
             this.castType = 'snipe';
             this.castAimX = targetX;
             this.castAimY = targetY;
-            pendingEvents.push({ tag: 'snipe_charge_start', who: this === player ? 'player' : 'enemy' });
+            pendingEvents.push({ tag: 'snipe_charge_start', who: this.slot });
             this.startSnipeChargeSound(CAST_SNIPE / 1000);
         }
 
@@ -607,7 +682,7 @@
         // so a target can juke it after the long cast finally releases.
         executeSnipe(targetX, targetY, now) {
             this.stopSnipeChargeSound();
-            const who = this === player ? 'player' : 'enemy';
+            const who = this.slot;
             pendingEvents.push({ tag: 'snipe_charge_stop', who });
             pendingEvents.push({ tag: 'snipe_fire', who });
             const angle = Math.atan2(targetY - this.y, targetX - this.x);
@@ -663,11 +738,7 @@
                 playTone({ freq: 200, freqEnd: 120, duration: 0.07, type: 'square', volume: 0.07 });
             }
 
-            if (this === player) {
-                damageFlashAlpha = Math.min(damageFlashAlpha + (isBigHit ? 0.5 : 0.25), 0.6);
-            } else if (this === enemy) {
-                enemyDamageFlashAlpha = Math.min(enemyDamageFlashAlpha + (isBigHit ? 0.5 : 0.25), 0.6);
-            }
+            this.screenFlashAlpha = Math.min(this.screenFlashAlpha + (isBigHit ? 0.5 : 0.25), 0.6);
         }
 
         draw(ctx, now) {
@@ -691,7 +762,7 @@
             // Snipe aim telegraph - shown for the whole cast so the target
             // (or the player themself) can see where it's currently pointed.
             if (this.castType === 'snipe' && now < this.castingUntil) {
-                const telegraphColor = this === player ? 'rgba(241, 196, 15, 0.55)' : 'rgba(231, 76, 60, 0.55)';
+                const telegraphColor = (player && this.team === player.team) ? 'rgba(241, 196, 15, 0.55)' : 'rgba(231, 76, 60, 0.55)';
                 ctx.save();
                 ctx.strokeStyle = telegraphColor;
                 ctx.lineWidth = 2;
@@ -776,21 +847,24 @@
         }
     }
 
-    let player, enemy;
-    
-    function initMatch() {
-        playerScore = 0;
-        enemyScore = 0;
+    let player, enemy; // player = the locally-viewed champion; enemy = kept for local-vs-AI mode only
+
+    // Is anyone on this team still alive? Round ends the moment one whole
+    // team is wiped - this is a 1-vs-1 check when there are 2 champions in
+    // play, and a whole-team check when there are 4.
+    function teamAlive(team) {
+        return activeChamps.some(c => c.team === team && c.hp > 0);
+    }
+
+    function initMatchGeneric() {
+        teamScore = { 0: 0, 1: 0 };
         currentRound = 1;
         matchEndSoundPlayed = false;
-        player = new Champion(100, canvas.height/2, false, '#3498db');
-        enemy = new Champion(canvas.width - 100, canvas.height/2, true, '#e74c3c');
         startRound();
     }
 
     function startRound() {
-        player.reset();
-        enemy.reset();
+        activeChamps.forEach(c => c.reset());
         projectiles = [];
         particles = [];
         aoes = [];
@@ -833,15 +907,15 @@
         ctx.fillStyle = '#fff';
         ctx.font = 'bold 20px sans-serif';
         ctx.textAlign = 'center';
-        ctx.fillText(`${playerScore} - ROUND ${currentRound} - ${enemyScore}`, canvas.width/2, 27);
+        ctx.fillText(`${teamScore[0]} - ROUND ${currentRound} - ${teamScore[1]}`, canvas.width/2, 27);
 
         ctx.fillStyle = '#3498db';
-        if(playerScore >= 1) ctx.beginPath(), ctx.arc(canvas.width/2 - 70, 20, 5, 0, Math.PI*2), ctx.fill();
-        if(playerScore >= 2) ctx.beginPath(), ctx.arc(canvas.width/2 - 85, 20, 5, 0, Math.PI*2), ctx.fill();
+        if(teamScore[0] >= 1) ctx.beginPath(), ctx.arc(canvas.width/2 - 70, 20, 5, 0, Math.PI*2), ctx.fill();
+        if(teamScore[0] >= 2) ctx.beginPath(), ctx.arc(canvas.width/2 - 85, 20, 5, 0, Math.PI*2), ctx.fill();
         
         ctx.fillStyle = '#e74c3c';
-        if(enemyScore >= 1) ctx.beginPath(), ctx.arc(canvas.width/2 + 70, 20, 5, 0, Math.PI*2), ctx.fill();
-        if(enemyScore >= 2) ctx.beginPath(), ctx.arc(canvas.width/2 + 85, 20, 5, 0, Math.PI*2), ctx.fill();
+        if(teamScore[1] >= 1) ctx.beginPath(), ctx.arc(canvas.width/2 + 70, 20, 5, 0, Math.PI*2), ctx.fill();
+        if(teamScore[1] >= 2) ctx.beginPath(), ctx.arc(canvas.width/2 + 85, 20, 5, 0, Math.PI*2), ctx.fill();
     }
 
     function drawCooldowns(now, champ = player, activeState = gameState) {
@@ -953,18 +1027,23 @@
 
         // --- Game State Logic ---
         if (gameState === 'playing') {
-            player.update(dt, now);
-            enemy.update(dt, now);
+            activeChamps.forEach(c => c.update(dt, now));
+            // Decay each champion's own screen-edge flash - kept per-champion
+            // (rather than one shared global) so this works the same whether
+            // there are 2 champions or 4.
+            activeChamps.forEach(c => {
+                if (c.screenFlashAlpha > 0) c.screenFlashAlpha = Math.max(0, c.screenFlashAlpha - dt * 1.8);
+            });
 
-            if (player.hp <= 0 || enemy.hp <= 0) {
+            if (!teamAlive(0) || !teamAlive(1)) {
                 gameState = 'roundEnd';
                 stateTimer = now + 3000;
-                if (player.hp > 0) playerScore++;
-                else enemyScore++;
+                if (teamAlive(0)) teamScore[0]++;
+                else teamScore[1]++;
             }
         } else if (gameState === 'roundEnd') {
             if (now > stateTimer) {
-                if (playerScore >= 2 || enemyScore >= 2) {
+                if (teamScore[0] >= 2 || teamScore[1] >= 2) {
                     gameState = 'matchEnd';
                 } else {
                     currentRound++;
@@ -972,7 +1051,7 @@
                 }
             }
         } else if (gameState === 'matchEnd') {
-            if (mouse.leftDown) initMatch();
+            if (mouse.leftDown) initMatchGeneric();
         }
 
         // --- Update AoEs ---
@@ -980,18 +1059,19 @@
             let a = aoes[i];
             const progress = Math.min((now - a.spawnTime) / (a.triggerTime - a.spawnTime), 1);
             
+            const aoeIsMine = a.owner.team === player.team;
             ctx.beginPath();
             ctx.arc(a.x, a.y, a.radius, 0, Math.PI * 2);
-            ctx.fillStyle = a.owner === player ? 'rgba(230, 126, 34, 0.1)' : 'rgba(231, 76, 60, 0.1)';
+            ctx.fillStyle = aoeIsMine ? 'rgba(230, 126, 34, 0.1)' : 'rgba(231, 76, 60, 0.1)';
             ctx.fill();
             
             ctx.beginPath();
             ctx.arc(a.x, a.y, a.radius * progress, 0, Math.PI * 2);
-            ctx.fillStyle = a.owner === player ? 'rgba(230, 126, 34, 0.4)' : 'rgba(231, 76, 60, 0.4)';
+            ctx.fillStyle = aoeIsMine ? 'rgba(230, 126, 34, 0.4)' : 'rgba(231, 76, 60, 0.4)';
             ctx.fill();
             
             ctx.lineWidth = 2;
-            ctx.strokeStyle = a.owner === player ? '#e67e22' : '#e74c3c';
+            ctx.strokeStyle = aoeIsMine ? '#e67e22' : '#e74c3c';
             ctx.stroke();
 
             if (now >= a.triggerTime) {
@@ -1009,10 +1089,9 @@
                     });
                 }
 
-                // Friendly Fire Fix: Target must NOT be the owner of the AoE
-                const targets = [player, enemy];
-                for(let target of targets) {
-                    if (target !== a.owner && target.hp > 0 && Math.hypot(a.x - target.x, a.y - target.y) < a.radius + target.radius) {
+                // Friendly Fire Fix: only champions on the OPPOSING team can be hit
+                for (let target of activeChamps) {
+                    if (target.team !== a.owner.team && target.hp > 0 && Math.hypot(a.x - target.x, a.y - target.y) < a.radius + target.radius) {
                         target.takeDamage(a.damage, now);
                         target.stunnedUntil = now + a.stunDuration;
                         createFloatingText(target.x, target.y - 40, "STUNNED!", '#f1c40f', 1.2);
@@ -1031,14 +1110,15 @@
                 p.y += p.vy * dt;
 
                 // Bright trail
+                const snipeIsMine = p.owner.team === player.team;
                 particles.push({
                     x: p.x, y: p.y, vx: -p.vx * 0.05, vy: -p.vy * 0.05,
                     life: 0.18, maxLife: 0.18,
-                    color: p.owner === player ? 'rgba(241, 196, 15, 0.6)' : 'rgba(231, 76, 60, 0.6)'
+                    color: snipeIsMine ? 'rgba(241, 196, 15, 0.6)' : 'rgba(231, 76, 60, 0.6)'
                 });
 
                 ctx.save();
-                ctx.shadowColor = p.owner === player ? '#f1c40f' : '#e74c3c';
+                ctx.shadowColor = snipeIsMine ? '#f1c40f' : '#e74c3c';
                 ctx.shadowBlur = 14;
                 ctx.beginPath();
                 ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
@@ -1063,20 +1143,23 @@
                     }
                 }
 
-                let target = p.owner === player ? enemy : player;
-                if (!hit && target.hp > 0) {
-                    if (Math.hypot(p.x - target.x, p.y - target.y) < target.radius + p.radius) {
-                        if (now < target.counterActiveUntil) {
-                            target.counterActiveUntil = 0;
-                            target.createParticles(target.x, target.y, '#3498db', 24);
-                            createFloatingText(target.x, target.y - 20, "BLOCKED!", '#3498db', 1.3);
-                            pendingEvents.push({ tag: 'block' });
-                            playTone({ freq: 1000, freqEnd: 1500, duration: 0.12, type: 'triangle', volume: 0.16 });
-                        } else {
-                            target.takeDamage(p.damage, now);
-                            target.createParticles(target.x, target.y, '#fff', 10, 1.3);
+                if (!hit) {
+                    for (const target of activeChamps) {
+                        if (target.team === p.owner.team || target.hp <= 0) continue;
+                        if (Math.hypot(p.x - target.x, p.y - target.y) < target.radius + p.radius) {
+                            if (now < target.counterActiveUntil) {
+                                target.counterActiveUntil = 0;
+                                target.createParticles(target.x, target.y, '#3498db', 24);
+                                createFloatingText(target.x, target.y - 20, "BLOCKED!", '#3498db', 1.3);
+                                pendingEvents.push({ tag: 'block' });
+                                playTone({ freq: 1000, freqEnd: 1500, duration: 0.12, type: 'triangle', volume: 0.16 });
+                            } else {
+                                target.takeDamage(p.damage, now);
+                                target.createParticles(target.x, target.y, '#fff', 10, 1.3);
+                            }
+                            hit = true;
+                            break;
                         }
-                        hit = true;
                     }
                 }
 
@@ -1093,15 +1176,16 @@
                 p.x += p.vx * dt;
                 p.y += p.vy * dt;
 
+                const shotIsMine = p.owner.team === player.team;
                 particles.push({
                     x: p.x, y: p.y, vx: 0, vy: 0,
                     life: 0.1, maxLife: 0.1,
-                    color: p.owner === player ? 'rgba(241, 196, 15, 0.5)' : 'rgba(230, 126, 34, 0.5)'
+                    color: shotIsMine ? 'rgba(241, 196, 15, 0.5)' : 'rgba(230, 126, 34, 0.5)'
                 });
 
                 ctx.beginPath();
                 ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
-                ctx.fillStyle = p.owner === player ? '#f1c40f' : '#e67e22';
+                ctx.fillStyle = shotIsMine ? '#f1c40f' : '#e67e22';
                 ctx.fill();
 
                 let hit = false;
@@ -1120,18 +1204,21 @@
                     }
                 }
 
-                let target = p.owner === player ? enemy : player;
-                if (!hit && target.hp > 0) {
-                    if (Math.hypot(p.x - target.x, p.y - target.y) < target.radius + p.radius) {
-                        if (now < target.counterActiveUntil) {
-                            target.counterActiveUntil = 0;
-                            target.createParticles(target.x, target.y, '#3498db', 20); 
-                            createFloatingText(target.x, target.y - 20, "BLOCKED!", '#3498db');
-                            pendingEvents.push({ tag: 'block' });
-                        } else {
-                            target.takeDamage(p.damage, now);
+                if (!hit) {
+                    for (const target of activeChamps) {
+                        if (target.team === p.owner.team || target.hp <= 0) continue;
+                        if (Math.hypot(p.x - target.x, p.y - target.y) < target.radius + p.radius) {
+                            if (now < target.counterActiveUntil) {
+                                target.counterActiveUntil = 0;
+                                target.createParticles(target.x, target.y, '#3498db', 20); 
+                                createFloatingText(target.x, target.y - 20, "BLOCKED!", '#3498db');
+                                pendingEvents.push({ tag: 'block' });
+                            } else {
+                                target.takeDamage(p.damage, now);
+                            }
+                            hit = true;
+                            break;
                         }
-                        hit = true;
                     }
                 }
 
@@ -1161,8 +1248,7 @@
         }
 
         // --- Draw Entities ---
-        player.draw(ctx, now);
-        enemy.draw(ctx, now);
+        activeChamps.forEach(c => c.draw(ctx, now));
 
         // --- Draw Overlays ---
         ctx.textAlign = 'center';
@@ -1192,25 +1278,26 @@
             ctx.fillRect(0, 0, canvas.width, canvas.height);
             ctx.fillStyle = '#fff';
             ctx.font = 'bold 48px sans-serif';
-            const winnerText = player.hp > 0 ? "YOU WIN THE ROUND" : "ENEMY WINS THE ROUND";
+            const winnerText = teamAlive(player.team) ? "YOUR TEAM WINS THE ROUND" : "OPPONENTS WIN THE ROUND";
             ctx.fillText(winnerText, canvas.width/2, canvas.height/2);
         } else if (gameState === 'matchEnd') {
             ctx.fillStyle = 'rgba(0,0,0,0.8)';
             ctx.fillRect(0, 0, canvas.width, canvas.height);
             ctx.fillStyle = '#fff';
             ctx.font = 'bold 64px sans-serif';
-            ctx.fillText(playerScore >= 2 ? "VICTORY" : "DEFEAT", canvas.width/2, canvas.height/2 - 20);
+            ctx.fillText(teamScore[player.team] >= 2 ? "VICTORY" : "DEFEAT", canvas.width/2, canvas.height/2 - 20);
             ctx.font = '20px sans-serif';
             ctx.fillText("Click to play again", canvas.width/2, canvas.height/2 + 40);
 
             if (!matchEndSoundPlayed) {
-                if (playerScore >= 2) {
+                const winningTeam = teamScore[0] >= 2 ? 0 : 1;
+                if (winningTeam === player.team) {
                     playArpeggio([440, 554, 659, 880], 0.12, 'triangle', 0.15);
                 } else {
                     playArpeggio([440, 370, 294, 220], 0.15, 'sawtooth', 0.13);
                 }
                 matchEndSoundPlayed = true;
-                pendingEvents.push({ tag: 'match_end', hostWon: playerScore >= 2 });
+                pendingEvents.push({ tag: 'match_end', winningTeam });
             }
         }
 
@@ -1246,7 +1333,7 @@
             drawOverlayEffects(now, dt);
         }
 
-        if (isOnline && isHost && conn && conn.open && !connectionLost) {
+        if (isOnline && isHost && hostConns.length > 0 && !connectionLost) {
             sendHostSnapshot(now);
         }
         pendingEvents = [];
@@ -1276,15 +1363,13 @@
             ctx.fillRect(0, 0, canvas.width, canvas.height);
         }
 
-        // Brief red flash when the local viewer's champion takes a hit
-        if (damageFlashAlpha > 0) {
-            ctx.fillStyle = `rgba(231, 76, 60, ${damageFlashAlpha})`;
+        // Brief red flash when the local viewer's champion takes a hit. On
+        // the host/local sim this value is decayed once per tick in
+        // gameLoopInner (for every champion, not just the viewer); on a
+        // guest it arrives fresh from the host in each snapshot.
+        if (viewerChamp && viewerChamp.screenFlashAlpha > 0) {
+            ctx.fillStyle = `rgba(231, 76, 60, ${viewerChamp.screenFlashAlpha})`;
             ctx.fillRect(0, 0, canvas.width, canvas.height);
-            damageFlashAlpha = Math.max(0, damageFlashAlpha - dt * 1.8);
-        }
-        // Host also decays the enemy-side flash purely so it has a fresh value to send the guest each tick
-        if (enemyDamageFlashAlpha > 0) {
-            enemyDamageFlashAlpha = Math.max(0, enemyDamageFlashAlpha - dt * 1.8);
         }
     }
 
@@ -1294,12 +1379,13 @@
 
     function championSnapshot(c) {
         return {
+            slot: c.slot, team: c.team,
             x: c.x, y: c.y, hp: c.hp, maxHp: c.maxHp, color: c.color,
             counterActiveUntil: c.counterActiveUntil, stunnedUntil: c.stunnedUntil,
             flashUntil: c.flashUntil, castType: c.castType, castingUntil: c.castingUntil,
             castTotalTime: c.castTotalTime, castAimX: c.castAimX, castAimY: c.castAimY,
             lastShot: c.lastShot, lastCounter: c.lastCounter, lastBlink: c.lastBlink,
-            lastAoe: c.lastAoe, lastSnipe: c.lastSnipe
+            lastAoe: c.lastAoe, lastSnipe: c.lastSnipe, screenFlashAlpha: c.screenFlashAlpha
         };
     }
 
@@ -1307,30 +1393,34 @@
         Object.assign(champ, data);
     }
 
-    function sendHostSnapshot(now) {
-        try {
-            conn.send({
-                type: 'state',
-                now,
-                gameState, stateTimer, currentRound, playerScore, enemyScore,
-                screenShake, hitStopTimer,
-                enemyDamageFlashAlpha,
-                player: championSnapshot(player),
-                enemy: championSnapshot(enemy),
-                projectiles: projectiles.map(p => ({ x: p.x, y: p.y, radius: p.radius, owner: p.owner === player ? 'player' : 'enemy' })),
-                aoes: aoes.map(a => ({ x: a.x, y: a.y, radius: a.radius, spawnTime: a.spawnTime, triggerTime: a.triggerTime, owner: a.owner === player ? 'player' : 'enemy' })),
-                snipeProjectiles: snipeProjectiles.map(p => ({ x: p.x, y: p.y, radius: p.radius, owner: p.owner === player ? 'player' : 'enemy' })),
-                // Capped to the most recent N particles - a big AoE trigger or a
-                // snipe hit can spawn 20-24 at once, and without a cap this
-                // payload can spike large enough to overwhelm a shaky data
-                // channel right at the moment an ability fires.
-                particles: particles.slice(-60).map(p => ({ x: p.x, y: p.y, life: p.life, maxLife: p.maxLife, color: p.color })),
-                floatingTexts: floatingTexts.map(f => ({ x: f.x, y: f.y, text: f.text, color: f.color, life: f.life, maxLife: f.maxLife, scale: f.scale })),
-                events: pendingEvents
-            });
-        } catch (err) {
-            console.error('sendHostSnapshot failed (recovered):', err);
+    // Broadcasts one message to every connected guest (1-3 of them).
+    function broadcastToGuests(msg) {
+        for (const hc of hostConns) {
+            if (hc.conn && hc.conn.open) {
+                try { hc.conn.send(msg); } catch (err) { console.error('broadcast failed (recovered):', err); }
+            }
         }
+    }
+
+    function sendHostSnapshot(now) {
+        const payload = {
+            type: 'state',
+            now,
+            gameState, stateTimer, currentRound, teamScore,
+            screenShake, hitStopTimer,
+            champs: champs.map(championSnapshot),
+            projectiles: projectiles.map(p => ({ x: p.x, y: p.y, radius: p.radius, ownerTeam: p.owner.team })),
+            aoes: aoes.map(a => ({ x: a.x, y: a.y, radius: a.radius, spawnTime: a.spawnTime, triggerTime: a.triggerTime, ownerTeam: a.owner.team })),
+            snipeProjectiles: snipeProjectiles.map(p => ({ x: p.x, y: p.y, radius: p.radius, ownerTeam: p.owner.team })),
+            // Capped to the most recent N particles - a big AoE trigger or a
+            // snipe hit can spawn 20-24 at once, and without a cap this
+            // payload can spike large enough to overwhelm a shaky data
+            // channel right at the moment an ability fires.
+            particles: particles.slice(-60).map(p => ({ x: p.x, y: p.y, life: p.life, maxLife: p.maxLife, color: p.color })),
+            floatingTexts: floatingTexts.map(f => ({ x: f.x, y: f.y, text: f.text, color: f.color, life: f.life, maxLife: f.maxLife, scale: f.scale })),
+            events: pendingEvents
+        };
+        broadcastToGuests(payload);
     }
 
     // ============================================================
@@ -1339,17 +1429,19 @@
 
     function drawProjectilesOnly(list) {
         for (const p of list) {
+            const mine = p.ownerTeam === player.team;
             ctx.beginPath();
             ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
-            ctx.fillStyle = p.owner === 'player' ? '#f1c40f' : '#e67e22';
+            ctx.fillStyle = mine ? '#f1c40f' : '#e67e22';
             ctx.fill();
         }
     }
 
     function drawSnipeProjectilesOnly(list) {
         for (const p of list) {
+            const mine = p.ownerTeam === player.team;
             ctx.save();
-            ctx.shadowColor = p.owner === 'player' ? '#f1c40f' : '#e74c3c';
+            ctx.shadowColor = mine ? '#f1c40f' : '#e74c3c';
             ctx.shadowBlur = 14;
             ctx.beginPath();
             ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
@@ -1361,19 +1453,20 @@
 
     function drawAoesOnly(list, now) {
         for (const a of list) {
+            const mine = a.ownerTeam === player.team;
             const progress = Math.min((now - a.spawnTime) / (a.triggerTime - a.spawnTime), 1);
             ctx.beginPath();
             ctx.arc(a.x, a.y, a.radius, 0, Math.PI * 2);
-            ctx.fillStyle = a.owner === 'player' ? 'rgba(230, 126, 34, 0.1)' : 'rgba(231, 76, 60, 0.1)';
+            ctx.fillStyle = mine ? 'rgba(230, 126, 34, 0.1)' : 'rgba(231, 76, 60, 0.1)';
             ctx.fill();
 
             ctx.beginPath();
             ctx.arc(a.x, a.y, a.radius * progress, 0, Math.PI * 2);
-            ctx.fillStyle = a.owner === 'player' ? 'rgba(230, 126, 34, 0.4)' : 'rgba(231, 76, 60, 0.4)';
+            ctx.fillStyle = mine ? 'rgba(230, 126, 34, 0.4)' : 'rgba(231, 76, 60, 0.4)';
             ctx.fill();
 
             ctx.lineWidth = 2;
-            ctx.strokeStyle = a.owner === 'player' ? '#e67e22' : '#e74c3c';
+            ctx.strokeStyle = mine ? '#e67e22' : '#e74c3c';
             ctx.stroke();
         }
     }
@@ -1446,14 +1539,14 @@
             ctx.fillRect(0, 0, canvas.width, canvas.height);
             ctx.fillStyle = '#fff';
             ctx.font = 'bold 48px sans-serif';
-            const guestWon = snap.enemy.hp > 0;
-            ctx.fillText(guestWon ? "YOU WIN THE ROUND" : "OPPONENT WINS THE ROUND", canvas.width / 2, canvas.height / 2);
+            const guestWon = snap.champs.some(c => c.team === player.team && c.hp > 0);
+            ctx.fillText(guestWon ? "YOUR TEAM WINS THE ROUND" : "OPPONENTS WIN THE ROUND", canvas.width / 2, canvas.height / 2);
         } else if (snap.gameState === 'matchEnd') {
             ctx.fillStyle = 'rgba(0,0,0,0.8)';
             ctx.fillRect(0, 0, canvas.width, canvas.height);
             ctx.fillStyle = '#fff';
             ctx.font = 'bold 64px sans-serif';
-            ctx.fillText(snap.enemyScore >= 2 ? "VICTORY" : "DEFEAT", canvas.width / 2, canvas.height / 2 - 20);
+            ctx.fillText(snap.teamScore[player.team] >= 2 ? "VICTORY" : "DEFEAT", canvas.width / 2, canvas.height / 2 - 20);
             ctx.font = '20px sans-serif';
             ctx.fillText("Click to request rematch", canvas.width / 2, canvas.height / 2 + 40);
         }
@@ -1462,7 +1555,7 @@
     function handleRemoteEvents(events) {
         if (!events) return;
         for (const ev of events) {
-            const champ = ev.who === 'player' ? player : (ev.who === 'enemy' ? enemy : null);
+            const champ = (typeof ev.who === 'number') ? activeChamps.find(c => c.slot === ev.who) : null;
             switch (ev.tag) {
                 case 'shoot': playTone({ freq: 620, freqEnd: 480, duration: 0.07, type: 'square', volume: 0.07 }); break;
                 case 'counter': playTone({ freq: 500, freqEnd: 900, duration: 0.15, type: 'triangle', volume: 0.12 }); break;
@@ -1487,7 +1580,7 @@
                 case 'hit_small': playTone({ freq: 200, freqEnd: 120, duration: 0.07, type: 'square', volume: 0.07 }); break;
                 case 'fight': playTone({ freq: 220, freqEnd: 440, duration: 0.3, type: 'square', volume: 0.15 }); break;
                 case 'match_end': {
-                    const iWon = !ev.hostWon; // guest is never the host
+                    const iWon = ev.winningTeam === player.team;
                     if (iWon) playArpeggio([440, 554, 659, 880], 0.12, 'triangle', 0.15);
                     else playArpeggio([440, 370, 294, 220], 0.15, 'sawtooth', 0.13);
                     break;
@@ -1540,8 +1633,12 @@
         drawGuestArenaBackground();
 
         if (snap && !connectionLost) {
-            applyChampionSnapshot(player, snap.player);
-            applyChampionSnapshot(enemy, snap.enemy);
+            snap.champs.forEach(sc => {
+                const c = guestChamps.find(gc => gc.slot === sc.slot);
+                if (c) applyChampionSnapshot(c, sc);
+            });
+            activeChamps = guestChamps;
+            player = guestChamps.find(c => c.slot === mySlot) || player;
 
             // The host and guest each have their own performance.now() clock,
             // zeroed at whatever moment their tab happened to load - there's no
@@ -1561,21 +1658,17 @@
             drawProjectilesOnly(snap.projectiles);
             drawParticlesOnly(snap.particles);
 
-            player.draw(ctx, hostNow);
-            enemy.draw(ctx, hostNow);
+            guestChamps.forEach(c => c.draw(ctx, hostNow));
 
             drawFloatingTextsOnly(snap.floatingTexts);
 
-            playerScore = snap.playerScore;
-            enemyScore = snap.enemyScore;
+            teamScore = snap.teamScore;
             currentRound = snap.currentRound;
             gameState = snap.gameState;
 
             drawGuestStateOverlay(snap, hostNow);
             drawScoreboard();
-            drawCooldowns(hostNow, enemy, snap.gameState);
-
-            damageFlashAlpha = snap.enemyDamageFlashAlpha;
+            drawCooldowns(hostNow, player, snap.gameState);
         }
 
         ctx.restore();
@@ -1583,7 +1676,7 @@
         if (connectionLost) {
             drawConnectionLostOverlay();
         } else {
-            drawOverlayEffects(now, dt, enemy);
+            drawOverlayEffects(now, dt, player);
         }
 
         if (conn && conn.open && !connectionLost) {
@@ -1622,22 +1715,58 @@
     const mainMenuPanel = document.getElementById('mainMenuPanel');
     const hostPanel = document.getElementById('hostPanel');
     const joinPanel = document.getElementById('joinPanel');
+    const lobbyPanel = document.getElementById('lobbyPanel');
+    const lobbyRoomLinkBox = document.getElementById('lobbyRoomLinkBox');
+    const roomCodeDisplay2 = document.getElementById('roomCodeDisplay2');
+    const lobbyPlayerList = document.getElementById('lobbyPlayerList');
+    const btnJoinTeamBlue = document.getElementById('btnJoinTeamBlue');
+    const btnJoinTeamRed = document.getElementById('btnJoinTeamRed');
+    const btnStartMatch = document.getElementById('btnStartMatch');
+    const lobbyStatus = document.getElementById('lobbyStatus');
     const menuStatus = document.getElementById('menuStatus');
     const roomCodeDisplay = document.getElementById('roomCodeDisplay');
     const youIndicator = document.getElementById('youIndicator');
     const youIndicatorText = document.getElementById('youIndicatorText');
 
     function showPanel(panel) {
-        [mainMenuPanel, hostPanel, joinPanel].forEach(p => p.classList.add('hidden'));
+        [mainMenuPanel, hostPanel, joinPanel, lobbyPanel].forEach(p => p.classList.add('hidden'));
         panel.classList.remove('hidden');
         menuStatus.textContent = '';
     }
 
-    function setYouIndicator(role) {
-        if (!role) { youIndicator.classList.add('hidden'); return; }
+    function setYouIndicator(team) {
+        if (team === null || team === undefined) { youIndicator.classList.add('hidden'); return; }
         youIndicator.classList.remove('hidden');
-        youIndicator.querySelector('.dot').style.background = role === 'player' ? '#3498db' : '#e74c3c';
+        youIndicator.querySelector('.dot').style.background = team === 0 ? '#3498db' : '#e74c3c';
         youIndicatorText.textContent = 'YOU';
+    }
+
+    // ------------------------------------------------------------
+    // Builds Champion objects from a lobby player list, positioning
+    // teams on opposite sides of the arena. Works for a 2-player (1v1)
+    // or 4-player (2v2) list; used identically on host and guest.
+    // ------------------------------------------------------------
+    function buildChampsFromLobby(players) {
+        const sorted = [...players].sort((a, b) => a.slot - b.slot);
+        const isDuo = sorted.length === 4;
+        const positions1v1 = { 0: { x: 100, y: canvas.height / 2 }, 1: { x: canvas.width - 100, y: canvas.height / 2 } };
+        const positions2v2 = {
+            0: [{ x: 100, y: 200 }, { x: 100, y: 400 }],
+            1: [{ x: canvas.width - 100, y: 200 }, { x: canvas.width - 100, y: 400 }]
+        };
+        const teamCounts = { 0: 0, 1: 0 };
+        const result = [];
+        sorted.forEach(p => {
+            const idx = teamCounts[p.team]++;
+            const pos = isDuo ? positions2v2[p.team][idx] : positions1v1[p.team];
+            const color = (TEAM_COLORS[p.team] && TEAM_COLORS[p.team][idx]) || TEAM_COLORS[p.team][0];
+            const c = new Champion(pos.x, pos.y, false, color);
+            c.slot = p.slot;
+            c.team = p.team;
+            c.inputMode = (p.slot === 0) ? 'local' : 'remote';
+            result.push(c);
+        });
+        return result;
     }
 
     function startLocalGame() {
@@ -1646,21 +1775,31 @@
         isOnline = false; isHost = false;
         connectionLost = false;
         runningMode = 'sim';
-        initMatch();
+        player = new Champion(100, canvas.height / 2, false, '#3498db');
+        player.slot = 0; player.team = 0; player.inputMode = 'local';
+        enemy = new Champion(canvas.width - 100, canvas.height / 2, true, '#e74c3c');
+        enemy.slot = 1; enemy.team = 1; enemy.isAI = true;
+        activeChamps = [player, enemy];
+        initMatchGeneric();
         requestAnimationFrame(gameLoop);
     }
 
-    function startHostGame() {
+    function startOnlineHostMatch() {
+        broadcastToGuests({ type: 'start', players: lobbyPlayers });
         menuOverlay.classList.add('hidden');
         isOnline = true; isHost = true;
         connectionLost = false;
         runningMode = 'sim';
-        setYouIndicator('player');
-        initMatch();
+        remoteInputsBySlot = {};
+        champs = buildChampsFromLobby(lobbyPlayers);
+        activeChamps = champs;
+        player = champs.find(c => c.slot === 0);
+        setYouIndicator(player.team);
+        initMatchGeneric();
         requestAnimationFrame(gameLoop);
     }
 
-    function startGuestGame() {
+    function startGuestGame(players) {
         menuOverlay.classList.add('hidden');
         isOnline = true; isHost = false;
         connectionLost = false;
@@ -1668,10 +1807,82 @@
         latestSnapshot = null;
         guestGameStartedAt = performance.now();
         lastSnapshotAt = performance.now();
-        setYouIndicator('enemy');
-        player = new Champion(100, canvas.height / 2, false, '#3498db');
-        enemy = new Champion(canvas.width - 100, canvas.height / 2, true, '#e74c3c');
+        guestChamps = buildChampsFromLobby(players);
+        activeChamps = guestChamps;
+        player = guestChamps.find(c => c.slot === mySlot) || guestChamps[0];
+        setYouIndicator(player.team);
         requestAnimationFrame(guestGameLoop);
+    }
+
+    // ------------------------------------------------------------
+    // Lobby rendering + validation (1v1 needs 2 players split 1/1,
+    // 2v2 needs 4 players split 2/2; teams are picked by each player).
+    // ------------------------------------------------------------
+    function lobbyValidationMessage() {
+        const n = lobbyPlayers.length;
+        if (n < 2) return 'Waiting for at least one more player to join...';
+        if (n === 3) return 'Need a 4th player for 2v2 (or have one player leave for 1v1).';
+        if (lobbyPlayers.some(p => p.team === null || p.team === undefined)) return 'Waiting for everyone to pick a team...';
+        const t0 = lobbyPlayers.filter(p => p.team === 0).length;
+        const t1 = lobbyPlayers.filter(p => p.team === 1).length;
+        if (t0 !== t1) return 'Teams must be even - 1v1 or 2v2.';
+        return '';
+    }
+
+    function isLobbyValid() {
+        const n = lobbyPlayers.length;
+        return (n === 2 || n === 4) && lobbyValidationMessage() === '';
+    }
+
+    function renderLobby() {
+        if (isHost) {
+            lobbyRoomLinkBox.classList.remove('hidden');
+        } else {
+            lobbyRoomLinkBox.classList.add('hidden');
+        }
+
+        lobbyPlayerList.innerHTML = '';
+        [...lobbyPlayers].sort((a, b) => a.slot - b.slot).forEach(p => {
+            const row = document.createElement('div');
+            row.className = 'lobbyRow';
+            const label = p.isHost ? 'Host' : `Player ${p.slot + 1}`;
+            const teamLabel = p.team === 0 ? 'Team Blue' : (p.team === 1 ? 'Team Red' : 'no team yet');
+            const youTag = p.slot === mySlot ? ' (You)' : '';
+            row.textContent = `${label}${youTag} — ${teamLabel}`;
+            row.style.color = p.team === 0 ? '#3498db' : (p.team === 1 ? '#e74c3c' : '#94a3b8');
+            lobbyPlayerList.appendChild(row);
+        });
+
+        const me = lobbyPlayers.find(p => p.slot === mySlot);
+        btnJoinTeamBlue.classList.toggle('teamBtnSelected', !!me && me.team === 0);
+        btnJoinTeamRed.classList.toggle('teamBtnSelected', !!me && me.team === 1);
+
+        if (isHost) {
+            btnStartMatch.classList.remove('hidden');
+            const valid = isLobbyValid();
+            btnStartMatch.disabled = !valid;
+            lobbyStatus.textContent = valid
+                ? `Ready for ${lobbyPlayers.length === 2 ? '1v1' : '2v2'} — click Start Match.`
+                : lobbyValidationMessage();
+        } else {
+            btnStartMatch.classList.add('hidden');
+            lobbyStatus.textContent = 'Waiting for the host to start the match...';
+        }
+    }
+
+    function broadcastLobby() {
+        broadcastToGuests({ type: 'lobby', players: lobbyPlayers });
+    }
+
+    function chooseTeam(team) {
+        if (isHost) {
+            const me = lobbyPlayers.find(p => p.slot === 0);
+            if (me) me.team = team;
+            broadcastLobby();
+            renderLobby();
+        } else if (conn && conn.open) {
+            try { conn.send({ type: 'setTeam', team }); } catch (e) {}
+        }
     }
 
     function drawConnectionLostOverlay() {
@@ -1709,6 +1920,13 @@
     function returnToMenu() {
         if (peer) { try { peer.destroy(); } catch (e) {} peer = null; }
         conn = null;
+        hostConns = [];
+        nextSlot = 1;
+        mySlot = 0;
+        lobbyPlayers = [];
+        remoteInputsBySlot = {};
+        champs = [];
+        guestChamps = [];
         isOnline = false; isHost = false;
         connectionLost = false;
         runningMode = null;
@@ -1735,55 +1953,78 @@
     document.getElementById('btnLocal').addEventListener('click', startLocalGame);
 
     document.getElementById('btnHost').addEventListener('click', () => {
-        showPanel(hostPanel);
-        menuStatus.textContent = 'Creating room...';
+        isHost = true;
+        mySlot = 0;
+        nextSlot = 1;
+        hostConns = [];
+        lobbyPlayers = [{ slot: 0, team: null, isHost: true }];
+        showPanel(lobbyPanel);
+        lobbyStatus.textContent = 'Creating room...';
         peer = new Peer({ config: PEER_ICE_CONFIG });
         peer.on('open', id => {
-            roomCodeDisplay.textContent = buildInviteLink(id);
-            menuStatus.textContent = 'Waiting for your friend to connect...';
+            roomCodeDisplay2.textContent = buildInviteLink(id);
+            renderLobby();
         });
         peer.on('connection', c => {
-            conn = c;
-            conn.on('open', () => {
-                menuStatus.textContent = 'Connected! Starting match...';
-                setTimeout(startHostGame, 400);
+            // Room supports up to 3 guests (host + 3 = 4 total, for 2v2)
+            if (hostConns.length >= 3) {
+                try { c.send({ type: 'full' }); } catch (e) {}
+                setTimeout(() => { try { c.close(); } catch (e) {} }, 200);
+                return;
+            }
+            const slot = nextSlot++;
+            hostConns.push({ conn: c, slot });
+            lobbyPlayers.push({ slot, team: null, isHost: false });
+
+            c.on('open', () => {
+                try { c.send({ type: 'welcome', yourSlot: slot }); } catch (e) {}
+                broadcastLobby();
+                renderLobby();
             });
-            conn.on('data', data => {
+            c.on('data', data => {
                 try {
-                    if (data.type === 'input') {
-                        remoteInput.keys = data.keys;
-                        remoteInput.mouse = data.mouse;
+                    if (data.type === 'setTeam') {
+                        const p = lobbyPlayers.find(pl => pl.slot === slot);
+                        if (p) p.team = data.team;
+                        broadcastLobby();
+                        renderLobby();
+                    } else if (data.type === 'input') {
+                        remoteInputsBySlot[slot] = { keys: data.keys, mouse: data.mouse };
                     } else if (data.type === 'restart') {
-                        if (gameState === 'matchEnd') initMatch();
+                        if (gameState === 'matchEnd') initMatchGeneric();
                     }
                 } catch (err) {
                     console.error('host data handler error (recovered):', err);
                 }
             });
-            conn.on('close', () => {
-                connectionLost = true;
-                connectionLostReason = 'Your friend disconnected.';
+            c.on('close', () => {
+                hostConns = hostConns.filter(hc => hc.slot !== slot);
+                lobbyPlayers = lobbyPlayers.filter(p => p.slot !== slot);
+                delete remoteInputsBySlot[slot];
+                if (runningMode === 'sim' && isOnline) {
+                    connectionLost = true;
+                    connectionLostReason = 'A player disconnected.';
+                } else {
+                    broadcastLobby();
+                    renderLobby();
+                }
             });
-            conn.on('error', () => {
-                connectionLost = true;
-                connectionLostReason = 'Connection to your friend was lost.';
+            c.on('error', () => {
+                if (runningMode === 'sim' && isOnline) {
+                    connectionLost = true;
+                    connectionLostReason = 'Connection to a player was lost.';
+                }
             });
         });
         peer.on('error', err => {
-            menuStatus.textContent = 'Connection error: ' + err.type;
+            lobbyStatus.textContent = 'Connection error: ' + err.type;
         });
     });
 
-    document.getElementById('btnCopyCode').addEventListener('click', () => {
-        navigator.clipboard.writeText(roomCodeDisplay.textContent).then(() => {
+    document.getElementById('btnCopyCode2').addEventListener('click', () => {
+        navigator.clipboard.writeText(roomCodeDisplay2.textContent).then(() => {
             menuStatus.textContent = 'Code copied!';
         }).catch(() => {});
-    });
-
-    document.getElementById('btnCancelHost').addEventListener('click', () => {
-        if (peer) { peer.destroy(); peer = null; }
-        conn = null;
-        showPanel(mainMenuPanel);
     });
 
     document.getElementById('btnJoin').addEventListener('click', () => {
@@ -1796,6 +2037,18 @@
         showPanel(mainMenuPanel);
     });
 
+    document.getElementById('btnLeaveLobby').addEventListener('click', () => {
+        returnToMenu();
+    });
+
+    btnJoinTeamBlue.addEventListener('click', () => chooseTeam(0));
+    btnJoinTeamRed.addEventListener('click', () => chooseTeam(1));
+
+    btnStartMatch.addEventListener('click', () => {
+        if (!isHost || !isLobbyValid()) return;
+        startOnlineHostMatch();
+    });
+
     document.getElementById('btnConnect').addEventListener('click', () => {
         let code = document.getElementById('joinCodeInput').value.trim();
         try {
@@ -1805,16 +2058,28 @@
         } catch (e) { /* not a URL, treat as a raw code */ }
         if (!code) { menuStatus.textContent = 'Enter a room code first.'; return; }
         menuStatus.textContent = 'Connecting...';
+        isHost = false;
         peer = new Peer({ config: PEER_ICE_CONFIG });
         peer.on('open', () => {
             conn = peer.connect(code);
             conn.on('open', () => {
-                menuStatus.textContent = 'Connected! Starting match...';
-                setTimeout(startGuestGame, 400);
+                menuStatus.textContent = 'Connected! Joining lobby...';
             });
             conn.on('data', data => {
                 try {
-                    if (data.type === 'state') {
+                    if (data.type === 'welcome') {
+                        mySlot = data.yourSlot;
+                        showPanel(lobbyPanel);
+                        renderLobby();
+                    } else if (data.type === 'lobby') {
+                        lobbyPlayers = data.players;
+                        renderLobby();
+                    } else if (data.type === 'start') {
+                        lobbyPlayers = data.players;
+                        startGuestGame(lobbyPlayers);
+                    } else if (data.type === 'full') {
+                        menuStatus.textContent = 'That room is full (max 4 players).';
+                    } else if (data.type === 'state') {
                         latestSnapshot = data;
                         lastSnapshotAt = performance.now();
                         handleRemoteEvents(data.events);
@@ -1824,14 +2089,21 @@
                 }
             });
             conn.on('close', () => {
-                connectionLost = true;
-                connectionLostReason = 'Connection to your friend was lost.';
+                if (runningMode === 'guest') {
+                    connectionLost = true;
+                    connectionLostReason = 'Connection to the host was lost.';
+                } else {
+                    menuStatus.textContent = 'Disconnected from the room.';
+                }
             });
             conn.on('error', () => {
-                connectionLost = true;
-                connectionLostReason = 'Connection to your friend was lost.';
+                if (runningMode === 'guest') {
+                    connectionLost = true;
+                    connectionLostReason = 'Connection to the host was lost.';
+                } else {
+                    menuStatus.textContent = 'Could not reach that room.';
+                }
             });
-            conn.on('error', () => { menuStatus.textContent = 'Could not reach that room.'; });
         });
         peer.on('error', err => {
             menuStatus.textContent = 'Connection error: ' + err.type;
@@ -1842,7 +2114,14 @@
         if (e.key === 'Enter') document.getElementById('btnConnect').click();
     });
 
-    initMatch();
+    // Prime a default player/enemy pair so nothing else references undefined
+    // champions before the person picks a mode from the menu (the menu
+    // overlay covers the canvas until then, so nothing is drawn yet).
+    player = new Champion(100, canvas.height / 2, false, '#3498db');
+    player.slot = 0; player.team = 0; player.inputMode = 'local';
+    enemy = new Champion(canvas.width - 100, canvas.height / 2, true, '#e74c3c');
+    enemy.slot = 1; enemy.team = 1; enemy.isAI = true;
+    activeChamps = [player, enemy];
     checkUrlForRoomCode();
 </script>
 </body>
